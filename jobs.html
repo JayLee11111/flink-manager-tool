@@ -23,9 +23,15 @@
     button { height: 40px; border: 0; border-radius: 8px; padding: 0 14px; cursor: pointer; }
     .btn-primary { background: #1677ff; color: #fff; }
     .btn-secondary { background: #2563eb; color: #fff; }
+    .btn-create { background: #1677ff; color: #fff; }
     .btn-light { background: #475467; color: #fff; }
     .btn-delete { background: #ef4444; color: #fff; height: 34px; }
-    .btn-view { background: #0ea5e9; color: #fff; height: 34px; margin-right: 8px; }
+    .btn-view { background: #0ea5e9; color: #fff; height: 34px; }
+    .btn-open-web { background: #0891b2; color: #fff; height: 34px; }
+    .btn-submit { background: #2563eb; color: #fff; height: 34px; }
+    .btn-cancel { background: #ea580c; color: #fff; height: 34px; }
+    .btn-check { background: #16a34a; color: #fff; height: 34px; }
+    .btn-check-all { background: #0f766e; color: #fff; }
     .btn-batch-start { background: #16a34a; color: #fff; }
     .btn-batch-stop { background: #ea580c; color: #fff; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
@@ -36,6 +42,8 @@
     .tag.running { color: #166534; background: #dcfce7; border-color: #86efac; }
     .tag.stopped { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
     .tag.failed { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+    .tag.unknown { color: #6b7280; background: #f3f4f6; border-color: #d1d5db; }
+    .dup-mark { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; font-size: 11px; color: #7f1d1d; background: #fee2e2; border: 1px solid #fca5a5; font-weight: 600; }
     .hint { margin-top: 8px; color: #667085; font-size: 12px; }
     .params-preview { color: #475467; font-size: 12px; line-height: 1.5; }
     .modal-mask { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: none; align-items: center; justify-content: center; padding: 20px; }
@@ -44,7 +52,9 @@
     .modal-title { font-size: 16px; font-weight: 600; }
     .close-btn { border: 0; background: #ef4444; color: #fff; border-radius: 8px; height: 34px; padding: 0 10px; cursor: pointer; }
     .modal-body { padding: 16px; }
-    .json-box { margin: 0; white-space: pre-wrap; word-break: break-word; background: #0b1020; color: #e5e7eb; border-radius: 10px; padding: 12px; max-height: 420px; overflow: auto; font-size: 12px; line-height: 1.45; }
+    .config-editor { width: 100%; min-height: 320px; border: 1px solid #d0d5dd; border-radius: 8px; padding: 10px 12px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.45; resize: vertical; }
+    .job-name-cell { width: 26%; min-width: 220px; }
+    .job-name-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word; line-height: 1.3; max-height: 2.6em; }
   </style>
 </head>
 <body>
@@ -59,23 +69,9 @@
     <div class="card">
       <h1 style="margin:0 0 12px; font-size:24px;">Job 管理</h1>
       <div class="form-row">
-        <input id="jobName" class="w-220" placeholder="Job 名称（可不填，优先取 --jobname）" />
-        <select id="jobCluster" class="w-220"></select>
-        <select id="jobStatus" class="w-200">
-          <option value="RUNNING">RUNNING</option>
-          <option value="STOPPED">STOPPED</option>
-          <option value="FAILED">FAILED</option>
-        </select>
-        <input id="jobRemark" class="flex-1" placeholder="备注（可选）" />
+        <button id="openAddJobModalBtn" class="btn-create">添加 Job</button>
       </div>
-      <div style="margin-top:10px;">
-        <textarea id="jobParams" placeholder="粘贴参数，例如：--job-type mysql_cdc --init-table true --hiveConfDir /etc/hive/conf"></textarea>
-        <div class="hint">参数规则：按 --key value 解析，每个 key 仅一个 value。</div>
-      </div>
-      <div class="form-row" style="margin-top:10px;">
-        <button id="addJobBtn" class="btn-primary">添加 Job</button>
-        <button id="parseAndAddBtn" class="btn-secondary">解析参数并添加</button>
-      </div>
+      <div class="hint">点击“添加 Job”后在弹窗中填写；Job 名称可不填，但所属集群必填。</div>
     </div>
 
     <div class="card">
@@ -86,28 +82,27 @@
           <option value="RUNNING">RUNNING</option>
           <option value="STOPPED">STOPPED</option>
           <option value="FAILED">FAILED</option>
+          <option value="UNKNOWN">UNKNOWN</option>
         </select>
-        <input id="filterKeyword" class="flex-1" placeholder="关键字筛选（jobname/database/bu/remark）" />
+        <input id="filterKeyword" class="flex-1" placeholder="关键字筛选（jobname/database/bu）" />
         <button id="resetFilterBtn" class="btn-light">重置筛选</button>
       </div>
       <div class="form-row" style="margin-bottom:10px;">
         <button id="batchStartBtn" class="btn-batch-start">批量启动</button>
         <button id="batchStopBtn" class="btn-batch-stop">批量停止</button>
+        <button id="checkAllBtn" class="btn-check-all">一键检测</button>
       </div>
 
       <table>
         <thead>
           <tr>
-            <th style="width: 50px;"><input id="selectAllJobs" type="checkbox" /></th>
-            <th style="width: 12%;">Job 名称</th>
+            <th style="width: 26%;">Job 名称</th>
             <th style="width: 12%;">所属集群</th>
             <th style="width: 10%;">状态</th>
             <th style="width: 14%;">启动时间</th>
             <th style="width: 10%;">运行时长</th>
-            <th style="width: 14%;">Checkpoint 时间</th>
-            <th style="width: 12%;">备注</th>
             <th>参数预览</th>
-            <th style="width: 160px;">操作</th>
+            <th style="width: 280px;">操作</th>
           </tr>
         </thead>
         <tbody id="jobBody"></tbody>
@@ -118,11 +113,44 @@
   <div id="paramsModalMask" class="modal-mask">
     <div class="modal">
       <div class="modal-header">
-        <div class="modal-title">Job 参数详情</div>
-        <button id="closeModalBtn" class="close-btn">关闭</button>
+        <div class="modal-title">Job Config</div>
+        <div class="form-row">
+          <button id="saveConfigBtn" class="btn-primary">提交修改</button>
+          <button id="closeModalBtn" class="close-btn">关闭</button>
+        </div>
       </div>
       <div class="modal-body">
-        <pre id="paramsJsonBox" class="json-box">{}</pre>
+        <textarea id="paramsJsonBox" class="config-editor" spellcheck="false"></textarea>
+        <div class="hint">请填写合法 JSON。提交后将保存到该 Job 的 params。</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="addJobModalMask" class="modal-mask">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">添加 Job</div>
+        <button id="closeAddJobModalBtn" class="close-btn">关闭</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-row">
+          <input id="jobName" class="w-220" placeholder="Job 名称（可不填，优先取 --jobname）" />
+          <select id="jobCluster" class="w-220"></select>
+          <select id="jobStatus" class="w-200">
+            <option value="RUNNING">RUNNING</option>
+            <option value="STOPPED">STOPPED</option>
+            <option value="FAILED">FAILED</option>
+            <option value="UNKNOWN">UNKNOWN</option>
+          </select>
+        </div>
+        <div style="margin-top:10px;">
+          <textarea id="jobParams" placeholder="粘贴参数，例如：--job-type mysql_cdc --init-table true --hiveConfDir /etc/hive/conf"></textarea>
+          <div class="hint">参数规则：按 --key value 解析，每个 key 仅一个 value。</div>
+        </div>
+        <div class="form-row" style="margin-top:10px;">
+          <button id="addJobBtn" class="btn-primary">直接添加</button>
+          <button id="parseAndAddBtn" class="btn-secondary">解析参数并添加</button>
+        </div>
       </div>
     </div>
   </div>
@@ -135,20 +163,26 @@
     const jobName = document.getElementById("jobName");
     const jobCluster = document.getElementById("jobCluster");
     const jobStatus = document.getElementById("jobStatus");
-    const jobRemark = document.getElementById("jobRemark");
     const jobParams = document.getElementById("jobParams");
     const addJobBtn = document.getElementById("addJobBtn");
     const parseAndAddBtn = document.getElementById("parseAndAddBtn");
+    const openAddJobModalBtn = document.getElementById("openAddJobModalBtn");
+    const addJobModalMask = document.getElementById("addJobModalMask");
+    const closeAddJobModalBtn = document.getElementById("closeAddJobModalBtn");
     const body = document.getElementById("jobBody");
 
     const filterCluster = document.getElementById("filterCluster");
     const filterStatus = document.getElementById("filterStatus");
     const filterKeyword = document.getElementById("filterKeyword");
     const resetFilterBtn = document.getElementById("resetFilterBtn");
+    const checkAllBtn = document.getElementById("checkAllBtn");
 
     const paramsModalMask = document.getElementById("paramsModalMask");
     const closeModalBtn = document.getElementById("closeModalBtn");
+    const saveConfigBtn = document.getElementById("saveConfigBtn");
     const paramsJsonBox = document.getElementById("paramsJsonBox");
+    let configEditingJob = null;
+    let checkingAll = false;
 
     async function load(key) {
       const value = window.DataAccess.load(key);
@@ -162,8 +196,8 @@
       return window.DataAccess.save(key, value);
     }
 
-    function renderClusterOptions() {
-      const clusters = load(CLUSTER_KEY);
+    async function renderClusterOptions() {
+      const clusters = await load(CLUSTER_KEY);
       jobCluster.innerHTML = "";
       filterCluster.innerHTML = '<option value="">全部集群</option>';
 
@@ -188,6 +222,23 @@
         optFilter.textContent = name;
         filterCluster.appendChild(optFilter);
       });
+    }
+
+    function buildFallbackJobName() {
+      return "UNNAMED_JOB_" + Date.now();
+    }
+
+    function clearAddJobForm() {
+      jobName.value = "";
+      jobParams.value = "";
+    }
+
+    function openAddJobModal() {
+      addJobModalMask.style.display = "flex";
+    }
+
+    function closeAddJobModal() {
+      addJobModalMask.style.display = "none";
     }
 
     function parseParams(paramText) {
@@ -242,7 +293,6 @@
         const params = item.params || {};
         const hay = [
           item.name || "",
-          item.remark || "",
           params["jobname"] || "",
           params["database"] || "",
           params["bu"] || "",
@@ -257,6 +307,7 @@
       const s = String(status || "").toUpperCase();
       if (s === "RUNNING") return "running";
       if (s === "FAILED") return "failed";
+      if (s === "UNKNOWN") return "unknown";
       return "stopped";
     }
 
@@ -264,7 +315,7 @@
       const list = await getFilteredJobs();
       body.innerHTML = "";
       if (!list.length) {
-        body.innerHTML = '<tr><td class="empty" colspan="9">暂无 Job</td></tr>';
+        body.innerHTML = '<tr><td class="empty" colspan="7">暂无 Job</td></tr>';
         return;
       }
       list.forEach((item, i) => {
@@ -272,22 +323,277 @@
         const cls = getStatusClass(status);
         const preview = buildParamsPreview(item.params);
         const tr = document.createElement("tr");
+        const duplicateMark = Number(item && item.duplicateCount || 0) > 1
+          ? `<span class="dup-mark">同名 ${Number(item.duplicateCount)} 个</span>`
+          : "";
         tr.innerHTML = `
-          <td>${item.name || ""}</td>
+          <td class="job-name-cell"><div class="job-name-text" title="${item.name || ""}">${item.name || ""}${duplicateMark}</div></td>
           <td>${item.cluster || ""}</td>
           <td><span class="tag ${cls}">${status || "UNKNOWN"}</span></td>
           <td>${item.startTime || "未知"}</td>
           <td>${item.uptime || "未知"}</td>
-          <td>${item.checkpointTime || "未知"}</td>
-          <td>${item.remark || ""}</td>
           <td class="params-preview">${preview || "-"}</td>
           <td>
-            <button class="btn-view" data-view="${i}">查看参数</button>
+            <button class="btn-open-web" data-openweb="${i}">Flink</button>
+            <button class="btn-submit" data-submit="${i}">Submit</button>
+            <button class="btn-cancel" data-cancel="${i}">Cancel</button>
+            <button class="btn-check" data-check="${i}">检测</button>
+            <button class="btn-view" data-view="${i}">Config</button>
             <button class="btn-delete" data-delete="${i}">删除</button>
           </td>
         `;
         body.appendChild(tr);
       });
+    }
+
+    async function getClusterMap() {
+      const clusters = await load(CLUSTER_KEY);
+      const map = {};
+      (clusters || []).forEach((item) => {
+        if (!item || !item.name) return;
+        map[item.name] = item;
+      });
+      return map;
+    }
+
+    function normalizeBaseUrl(url) {
+      return String(url || "").trim().replace(/\/+$/, "");
+    }
+
+    function resolveFlinkJobId(job) {
+      return String(
+        (job && job.params && (job.params["job-id"] || job.params["jobId"] || job.params["flink-job-id"])) ||
+        (job && job.flinkJobId) ||
+        ""
+      ).trim();
+    }
+
+    function buildFlinkWebUrl(base, jobId) {
+      const cleanBase = normalizeBaseUrl(base);
+      if (!cleanBase) return "";
+      if (jobId) return cleanBase + "/#/job/" + encodeURIComponent(jobId) + "/overview";
+      return cleanBase + "/#/overview";
+    }
+
+    async function requestJson(url, options) {
+      const res = await fetch(url, options || {});
+      if (!res.ok) throw new Error("HTTP_" + res.status);
+      const ct = String(res.headers.get("content-type") || "").toLowerCase();
+      if (ct.includes("application/json")) return res.json();
+      return {};
+    }
+
+    async function resolveJobSelection(job, base) {
+      if (!base) return { jobId: "", duplicateCount: 0, selectedStartTime: 0 };
+      const direct = resolveFlinkJobId(job);
+      if (direct) return { jobId: direct, duplicateCount: 0, selectedStartTime: 0 };
+      const overview = await requestJson(base + "/jobs/overview");
+      const jobs = Array.isArray(overview && overview.jobs) ? overview.jobs : [];
+      const target = String(job && job.name || "").trim().toUpperCase();
+      const matches = jobs.filter((item) => String(item && item.name || "").trim().toUpperCase() === target);
+      if (!matches.length) return { jobId: "", duplicateCount: 0, selectedStartTime: 0 };
+      const running = matches.filter((item) => String(item && item.state || "").toUpperCase() === "RUNNING");
+      const preferred = running.length ? running : matches;
+      preferred.sort((a, b) => Number(b && b["start-time"] || 0) - Number(a && a["start-time"] || 0));
+      const selected = preferred[0] || {};
+      return {
+        jobId: String(selected && selected.jid || "").trim(),
+        duplicateCount: matches.length,
+        selectedStartTime: Number(selected && selected["start-time"] || 0)
+      };
+    }
+
+    function toDurationText(ms) {
+      const value = Number(ms);
+      if (!Number.isFinite(value) || value <= 0) return "未知";
+      const total = Math.floor(value / 1000);
+      const d = Math.floor(total / 86400);
+      const h = Math.floor((total % 86400) / 3600);
+      const m = Math.floor((total % 3600) / 60);
+      const s = total % 60;
+      const parts = [];
+      if (d) parts.push(d + "d");
+      if (h || d) parts.push(h + "h");
+      if (m || h || d) parts.push(m + "m");
+      parts.push(s + "s");
+      return parts.join(" ");
+    }
+
+    function toTimeText(ts) {
+      const n = Number(ts);
+      if (!Number.isFinite(n) || n <= 0) return "未知";
+      return new Date(n).toLocaleString("zh-CN");
+    }
+
+    function resolveStartTimestamp(detail) {
+      const candidates = [
+        detail && detail.start_time,
+        detail && detail["start-time"],
+        detail && detail.timestamps && detail.timestamps.RUNNING,
+        detail && detail.timestamps && detail.timestamps.INITIALIZING,
+        detail && detail.timestamps && detail.timestamps.CREATED
+      ];
+      for (let i = 0; i < candidates.length; i += 1) {
+        const value = Number(candidates[i]);
+        if (Number.isFinite(value) && value > 0) return value;
+      }
+      return 0;
+    }
+
+    function findRealIndex(all, job) {
+      return all.findIndex((x) =>
+        x.name === job.name &&
+        x.cluster === job.cluster &&
+        JSON.stringify(x.params || {}) === JSON.stringify(job.params || {})
+      );
+    }
+
+    async function updateJobRow(job, patch) {
+      const all = await load(JOB_KEY);
+      const realIndex = findRealIndex(all, job);
+      if (realIndex < 0) return;
+      all[realIndex] = Object.assign({}, all[realIndex], patch || {});
+      save(JOB_KEY, all);
+      await renderJobs();
+    }
+
+    async function openJobFlinkWeb(job) {
+      const clusterMap = await getClusterMap();
+      const cluster = clusterMap[job.cluster];
+      const base = normalizeBaseUrl(cluster && cluster.url);
+      if (!base) return alert("未找到集群地址");
+      const isUnknown = String(job && job.status || "").toUpperCase() === "UNKNOWN";
+      if (isUnknown) {
+        window.open(base + "/#/overview", "_blank");
+        return;
+      }
+      const selection = await resolveJobSelection(job, base);
+      const jobId = selection.jobId;
+      if (selection.duplicateCount > 1) {
+        await updateJobRow(job, { duplicateCount: selection.duplicateCount });
+      }
+      const url = buildFlinkWebUrl(base, jobId);
+      if (!url) return alert("无法构造 Flink 页面地址");
+      window.open(url, "_blank");
+    }
+
+    async function submitJob(job) {
+      const clusterMap = await getClusterMap();
+      const cluster = clusterMap[job.cluster];
+      const base = normalizeBaseUrl(cluster && cluster.url);
+      if (!base) return alert("未找到集群地址");
+
+      const params = job.params || {};
+      const jarId = String(params["jar-id"] || params["jarid"] || params["jarId"] || "").trim();
+      if (!jarId) return alert("缺少 jar-id 参数，无法提交。请在参数中提供 --jar-id <id>。");
+
+      const bodyPayload = {};
+      if (params["entry-class"]) bodyPayload.entryClass = params["entry-class"];
+      if (params["program-args"]) bodyPayload.programArgs = params["program-args"];
+      if (params["parallelism"]) bodyPayload.parallelism = Number(params["parallelism"]);
+      const result = await requestJson(base + "/jars/" + encodeURIComponent(jarId) + "/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(bodyPayload)
+      });
+      const newJobId = String(result && (result.jobid || result.jobId || "") || "").trim();
+      await updateJobRow(job, {
+        status: "RUNNING",
+        flinkJobId: newJobId || resolveFlinkJobId(job),
+        startTime: toTimeText(Date.now()),
+        uptime: "0s"
+      });
+      alert("提交成功" + (newJobId ? "，jobId=" + newJobId : ""));
+    }
+
+    async function cancelJob(job) {
+      const clusterMap = await getClusterMap();
+      const cluster = clusterMap[job.cluster];
+      const base = normalizeBaseUrl(cluster && cluster.url);
+      if (!base) return alert("未找到集群地址");
+      const selection = await resolveJobSelection(job, base);
+      const jobId = selection.jobId;
+      if (!jobId) {
+        await updateJobRow(job, { status: "UNKNOWN", duplicateCount: selection.duplicateCount || 0 });
+        return alert("查询不到该 Job 的运行实例，已标记为 UNKNOWN。");
+      }
+      if (selection.duplicateCount > 1) {
+        await updateJobRow(job, { duplicateCount: selection.duplicateCount });
+      }
+
+      await requestJson(base + "/jobs/" + encodeURIComponent(jobId) + "?mode=cancel", { method: "PATCH" });
+      await updateJobRow(job, { status: "CANCELLING" });
+      alert("已发送取消请求");
+    }
+
+    async function checkJobStatus(job, options) {
+      const opts = options || {};
+      const silent = opts.silent === true;
+      const clusterMap = await getClusterMap();
+      const cluster = clusterMap[job.cluster];
+      const base = normalizeBaseUrl(cluster && cluster.url);
+      if (!base) {
+        await updateJobRow(job, { status: "UNKNOWN" });
+        if (!silent) alert("未找到集群地址，已标记为 UNKNOWN。");
+        return { ok: false, reason: "NO_CLUSTER_URL" };
+      }
+      const selection = await resolveJobSelection(job, base);
+      const jobId = selection.jobId;
+      if (!jobId) {
+        await updateJobRow(job, { status: "UNKNOWN", duplicateCount: selection.duplicateCount || 0 });
+        if (!silent) alert("查询不到该 Job 的运行实例，已标记为 UNKNOWN。");
+        return { ok: false, reason: "JOB_NOT_FOUND" };
+      }
+
+      try {
+        const detail = await requestJson(base + "/jobs/" + encodeURIComponent(jobId));
+        const state = String(detail && detail.state || "").toUpperCase() || "UNKNOWN";
+        const start = resolveStartTimestamp(detail);
+        const nextStartTime = Number.isFinite(start) && start > 0 ? toTimeText(start) : (job.startTime || "未知");
+        const nextUptime = Number.isFinite(start) && start > 0 ? toDurationText(Date.now() - start) : (job.uptime || "未知");
+        await updateJobRow(job, {
+          status: state,
+          duplicateCount: selection.duplicateCount || 0,
+          startTime: nextStartTime,
+          uptime: nextUptime
+        });
+        return { ok: true, reason: "" };
+      } catch (err) {
+        await updateJobRow(job, { status: "UNKNOWN", duplicateCount: selection.duplicateCount || 0 });
+        if (!silent) throw err;
+        return { ok: false, reason: err && err.message ? String(err.message) : "CHECK_FAILED" };
+      }
+    }
+
+    async function checkAllJobsStatus() {
+      if (checkingAll) return;
+      checkingAll = true;
+      const oldText = checkAllBtn.textContent;
+      checkAllBtn.disabled = true;
+      checkAllBtn.textContent = "检测中...";
+      try {
+        const jobs = await getFilteredJobs();
+        if (!jobs.length) {
+          alert("当前筛选条件下没有可检测的 Job。");
+          return;
+        }
+        const settled = await Promise.allSettled(jobs.map((job) => checkJobStatus(job, { silent: true })));
+        let okCount = 0;
+        let failCount = 0;
+        settled.forEach((item) => {
+          if (item.status !== "fulfilled") {
+            failCount += 1;
+            return;
+          }
+          if (item.value && item.value.ok) okCount += 1;
+          else failCount += 1;
+        });
+        alert("一键检测完成：成功 " + okCount + "，失败 " + failCount + "。");
+      } finally {
+        checkAllBtn.disabled = false;
+        checkAllBtn.textContent = oldText;
+        checkingAll = false;
+      }
     }
 
     async function addJob(job) {
@@ -301,21 +607,18 @@
       const name = jobName.value.trim();
       const cluster = jobCluster.value;
       const status = jobStatus.value;
-      const remark = jobRemark.value.trim();
 
-      if (!name) return alert("请输入 Job 名称");
       if (!cluster) return alert("请先选择所属集群");
+      const resolvedName = name || buildFallbackJobName();
 
-      addJob({ name, cluster, status, remark, params: {} });
-      jobName.value = "";
-      jobRemark.value = "";
-      jobParams.value = "";
+      await addJob({ name: resolvedName, cluster, status, params: {} });
+      clearAddJobForm();
+      closeAddJobModal();
     }
 
-    function parseAndAddJob() {
+    async function parseAndAddJob() {
       const cluster = jobCluster.value;
       const status = jobStatus.value;
-      const remark = jobRemark.value.trim();
       const paramsText = jobParams.value.trim();
 
       if (!cluster) return alert("请先选择所属集群");
@@ -323,36 +626,66 @@
 
       const params = parseParams(paramsText);
       const resolvedName = (params["jobname"] || "").trim() || jobName.value.trim();
-      if (!resolvedName) return alert("未解析到 --jobname，请填写 Job 名称");
+      const finalName = resolvedName || buildFallbackJobName();
 
-      addJob({
-        name: resolvedName,
+      await addJob({
+        name: finalName,
         cluster,
         status,
-        remark,
         params,
         rawParams: paramsText
       });
 
-      jobName.value = "";
-      jobRemark.value = "";
-      jobParams.value = "";
+      clearAddJobForm();
+      closeAddJobModal();
     }
 
     function openParamsModal(job) {
+      configEditingJob = job || null;
       const params = job && job.params ? job.params : null;
       if (!params || !Object.keys(params).length) {
-        paramsJsonBox.textContent = "无参数信息";
+        paramsJsonBox.value = "{}";
       } else {
-        paramsJsonBox.textContent = JSON.stringify(params, null, 2);
+        paramsJsonBox.value = JSON.stringify(params, null, 2);
       }
       paramsModalMask.style.display = "flex";
     }
 
     function closeParamsModal() {
       paramsModalMask.style.display = "none";
+      configEditingJob = null;
     }
 
+    async function saveConfigChanges() {
+      if (!configEditingJob) return;
+      let parsed;
+      try {
+        parsed = JSON.parse(paramsJsonBox.value || "{}");
+      } catch (_) {
+        alert("Config 不是合法 JSON");
+        return;
+      }
+
+      const all = await load(JOB_KEY);
+      const realIndex = findRealIndex(all, configEditingJob);
+      if (realIndex < 0) {
+        alert("未找到要更新的 Job");
+        return;
+      }
+
+      const current = all[realIndex];
+      const nextName = String((parsed && parsed["jobname"]) || "").trim() || current.name || buildFallbackJobName();
+      all[realIndex] = Object.assign({}, current, {
+        name: nextName,
+        params: parsed,
+        rawParams: JSON.stringify(parsed)
+      });
+      save(JOB_KEY, all);
+      await renderJobs();
+      closeParamsModal();
+    }
+
+    openAddJobModalBtn.addEventListener("click", openAddJobModal);
     addJobBtn.addEventListener("click", addJobManual);
     parseAndAddBtn.addEventListener("click", parseAndAddJob);
 
@@ -366,8 +699,61 @@
       filterKeyword.value = "";
       renderJobs();
     });
+    checkAllBtn.addEventListener("click", checkAllJobsStatus);
 
     body.addEventListener("click", async (e) => {
+      const openWebIdx = e.target.getAttribute("data-openweb");
+      if (openWebIdx !== null) {
+        const filtered = await getFilteredJobs();
+        const job = filtered[Number(openWebIdx)];
+        if (!job) return;
+        try {
+          await openJobFlinkWeb(job);
+        } catch (err) {
+          alert("打开 Flink 页面失败: " + (err && err.message ? err.message : "UNKNOWN_ERROR"));
+        }
+        return;
+      }
+
+      const submitIdx = e.target.getAttribute("data-submit");
+      if (submitIdx !== null) {
+        const filtered = await getFilteredJobs();
+        const job = filtered[Number(submitIdx)];
+        if (!job) return;
+        try {
+          await submitJob(job);
+        } catch (err) {
+          alert("Submit 失败: " + (err && err.message ? err.message : "UNKNOWN_ERROR"));
+        }
+        return;
+      }
+
+      const cancelIdx = e.target.getAttribute("data-cancel");
+      if (cancelIdx !== null) {
+        const filtered = await getFilteredJobs();
+        const job = filtered[Number(cancelIdx)];
+        if (!job) return;
+        try {
+          await cancelJob(job);
+        } catch (err) {
+          alert("Cancel 失败: " + (err && err.message ? err.message : "UNKNOWN_ERROR"));
+        }
+        return;
+      }
+
+      const checkIdx = e.target.getAttribute("data-check");
+      if (checkIdx !== null) {
+        const filtered = await getFilteredJobs();
+        const job = filtered[Number(checkIdx)];
+        if (!job) return;
+        try {
+          await checkJobStatus(job);
+        } catch (err) {
+          alert("检测状态失败: " + (err && err.message ? err.message : "UNKNOWN_ERROR"));
+        }
+        return;
+      }
+
       const viewIdx = e.target.getAttribute("data-view");
       if (viewIdx !== null) {
         const filtered = await getFilteredJobs();
@@ -383,12 +769,7 @@
       if (!job) return;
 
       const all = await load(JOB_KEY);
-      const realIndex = all.findIndex((x) =>
-        x.name === job.name &&
-        x.cluster === job.cluster &&
-        (x.remark || "") === (job.remark || "") &&
-        JSON.stringify(x.params || {}) === JSON.stringify(job.params || {})
-      );
+      const realIndex = findRealIndex(all, job);
       if (realIndex < 0) return;
 
       all.splice(realIndex, 1);
@@ -397,12 +778,21 @@
     });
 
     closeModalBtn.addEventListener("click", closeParamsModal);
+    saveConfigBtn.addEventListener("click", saveConfigChanges);
     paramsModalMask.addEventListener("click", (e) => {
       if (e.target === paramsModalMask) closeParamsModal();
     });
+    closeAddJobModalBtn.addEventListener("click", closeAddJobModal);
+    addJobModalMask.addEventListener("click", (e) => {
+      if (e.target === addJobModalMask) closeAddJobModal();
+    });
 
-    renderClusterOptions();
-    renderJobs();
+    async function init() {
+      await renderClusterOptions();
+      await renderJobs();
+    }
+
+    init();
   </script>
 </body>
 </html>
