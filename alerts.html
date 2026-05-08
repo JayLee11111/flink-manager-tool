@@ -14,9 +14,10 @@
     .card { background: #fff; border: 1px solid #e6e8eb; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
     .form-row { display: flex; gap: 10px; flex-wrap: wrap; }
     input, select { height: 40px; border: 1px solid #d0d5dd; border-radius: 8px; padding: 0 12px; font-size: 14px; background: #fff; }
+    .w-160 { width: 160px; }
     .w-180 { width: 180px; }
     .w-220 { width: 220px; }
-    .flex-1 { flex: 1; min-width: 260px; }
+    .flex-1 { flex: 1; min-width: 220px; }
     button { height: 40px; border: 0; border-radius: 8px; padding: 0 14px; cursor: pointer; }
     .btn-primary { background: #1677ff; color: #fff; }
     .btn-toggle { background: #f59e0b; color: #fff; height: 34px; margin-right: 8px; }
@@ -28,6 +29,10 @@
     .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #d0d5dd; }
     .tag.enabled { color: #166534; background: #dcfce7; border-color: #86efac; }
     .tag.disabled { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+    .sev { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid; }
+    .sev.P1 { color: #7f1d1d; background: #fee2e2; border-color: #fca5a5; }
+    .sev.P2 { color: #78350f; background: #fef3c7; border-color: #fcd34d; }
+    .sev.P3 { color: #1e3a8a; background: #dbeafe; border-color: #93c5fd; }
   </style>
 </head>
 <body>
@@ -47,18 +52,37 @@
           <option value="JOB_FAILED">Job 失败</option>
           <option value="CLUSTER_UNREACHABLE">集群不可达</option>
         </select>
-        <select id="notifyType" class="w-180">
+        <select id="severity" class="w-160">
+          <option value="P1">P1</option>
+          <option value="P2">P2</option>
+          <option value="P3">P3</option>
+        </select>
+        <select id="notifyType" class="w-160">
           <option value="EMAIL">Email</option>
           <option value="WEBHOOK">Webhook</option>
         </select>
         <input id="notifyTarget" class="flex-1" placeholder="通知目标（邮箱或 webhook 地址）" />
+      </div>
+      <div class="form-row" style="margin-top:10px;">
+        <input id="rule" class="flex-1" placeholder="规则条件（例如：连续失败 3 次）" />
         <button id="addAlertBtn" class="btn-primary">添加告警</button>
       </div>
     </div>
 
     <div class="card">
       <table>
-        <thead><tr><th style="width: 16%;">名称</th><th style="width: 18%;">类型</th><th style="width: 12%;">通知方式</th><th>通知目标</th><th style="width: 10%;">状态</th><th style="width: 170px;">操作</th></tr></thead>
+        <thead>
+          <tr>
+            <th style="width: 14%;">名称</th>
+            <th style="width: 14%;">类型</th>
+            <th style="width: 8%;">级别</th>
+            <th style="width: 10%;">通知方式</th>
+            <th style="width: 20%;">通知目标</th>
+            <th>规则</th>
+            <th style="width: 8%;">状态</th>
+            <th style="width: 170px;">操作</th>
+          </tr>
+        </thead>
         <tbody id="alertBody"></tbody>
       </table>
     </div>
@@ -69,8 +93,10 @@
 
     const alertName = document.getElementById("alertName");
     const alertType = document.getElementById("alertType");
+    const severity = document.getElementById("severity");
     const notifyType = document.getElementById("notifyType");
     const notifyTarget = document.getElementById("notifyTarget");
+    const rule = document.getElementById("rule");
     const addAlertBtn = document.getElementById("addAlertBtn");
     const body = document.getElementById("alertBody");
 
@@ -87,11 +113,23 @@
       localStorage.setItem(ALERT_KEY, JSON.stringify(list));
     }
 
+    function normalizeAlert(item) {
+      return {
+        name: item.name || "",
+        type: item.type || "JOB_FAILED",
+        severity: item.severity || "P2",
+        notifyType: item.notifyType || "EMAIL",
+        target: item.target || "",
+        rule: item.rule || "",
+        enabled: item.enabled !== false
+      };
+    }
+
     function render() {
-      const list = load();
+      const list = load().map(normalizeAlert);
       body.innerHTML = "";
       if (!list.length) {
-        body.innerHTML = '<tr><td class="empty" colspan="6">暂无告警配置</td></tr>';
+        body.innerHTML = '<tr><td class="empty" colspan="8">暂无告警配置</td></tr>';
         return;
       }
 
@@ -102,8 +140,10 @@
         tr.innerHTML = `
           <td>${item.name || ""}</td>
           <td>${item.type || ""}</td>
+          <td><span class="sev ${item.severity}">${item.severity}</span></td>
           <td>${item.notifyType || ""}</td>
           <td>${item.target || ""}</td>
+          <td>${item.rule || "-"}</td>
           <td><span class="tag ${cls}">${txt}</span></td>
           <td>
             <button class="btn-toggle" data-toggle="${i}">${item.enabled ? "停用" : "启用"}</button>
@@ -117,18 +157,29 @@
     function addAlert() {
       const name = alertName.value.trim();
       const type = alertType.value;
+      const sev = severity.value;
       const nType = notifyType.value;
       const target = notifyTarget.value.trim();
+      const ruleText = rule.value.trim();
 
       if (!name) return alert("请输入告警名称");
       if (!target) return alert("请输入通知目标");
 
       const list = load();
-      list.push({ name, type, notifyType: nType, target, enabled: true });
+      list.push({
+        name,
+        type,
+        severity: sev,
+        notifyType: nType,
+        target,
+        rule: ruleText,
+        enabled: true
+      });
       save(list);
 
       alertName.value = "";
       notifyTarget.value = "";
+      rule.value = "";
       render();
     }
 
@@ -142,7 +193,7 @@
       if (t !== null) {
         const i = Number(t);
         if (!list[i]) return;
-        list[i].enabled = !list[i].enabled;
+        list[i].enabled = list[i].enabled === false;
         save(list);
         render();
         return;

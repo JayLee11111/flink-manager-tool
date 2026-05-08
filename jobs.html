@@ -18,11 +18,14 @@
     textarea { min-height: 92px; padding: 10px 12px; resize: vertical; width: 100%; }
     .w-200 { width: 200px; }
     .w-220 { width: 220px; }
+    .w-180 { width: 180px; }
     .flex-1 { flex: 1; min-width: 240px; }
     button { height: 40px; border: 0; border-radius: 8px; padding: 0 14px; cursor: pointer; }
     .btn-primary { background: #1677ff; color: #fff; }
     .btn-secondary { background: #2563eb; color: #fff; }
+    .btn-light { background: #475467; color: #fff; }
     .btn-delete { background: #ef4444; color: #fff; height: 34px; }
+    .btn-view { background: #0ea5e9; color: #fff; height: 34px; margin-right: 8px; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
     th, td { border-bottom: 1px solid #eef0f3; padding: 12px 8px; text-align: left; word-break: break-all; }
     th { color: #475467; font-weight: 600; background: #fafafa; }
@@ -30,8 +33,16 @@
     .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #d0d5dd; }
     .tag.running { color: #166534; background: #dcfce7; border-color: #86efac; }
     .tag.stopped { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+    .tag.failed { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
     .hint { margin-top: 8px; color: #667085; font-size: 12px; }
     .params-preview { color: #475467; font-size: 12px; line-height: 1.5; }
+    .modal-mask { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.45); display: none; align-items: center; justify-content: center; padding: 20px; }
+    .modal { width: min(900px, 100%); background: #fff; border-radius: 12px; border: 1px solid #e6e8eb; }
+    .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid #eef0f3; }
+    .modal-title { font-size: 16px; font-weight: 600; }
+    .close-btn { border: 0; background: #ef4444; color: #fff; border-radius: 8px; height: 34px; padding: 0 10px; cursor: pointer; }
+    .modal-body { padding: 16px; }
+    .json-box { margin: 0; white-space: pre-wrap; word-break: break-word; background: #0b1020; color: #e5e7eb; border-radius: 10px; padding: 12px; max-height: 420px; overflow: auto; font-size: 12px; line-height: 1.45; }
   </style>
 </head>
 <body>
@@ -51,6 +62,7 @@
         <select id="jobStatus" class="w-200">
           <option value="RUNNING">RUNNING</option>
           <option value="STOPPED">STOPPED</option>
+          <option value="FAILED">FAILED</option>
         </select>
         <input id="jobRemark" class="flex-1" placeholder="备注（可选）" />
       </div>
@@ -65,19 +77,43 @@
     </div>
 
     <div class="card">
+      <div class="form-row" style="margin-bottom:10px;">
+        <select id="filterCluster" class="w-220"></select>
+        <select id="filterStatus" class="w-180">
+          <option value="">全部状态</option>
+          <option value="RUNNING">RUNNING</option>
+          <option value="STOPPED">STOPPED</option>
+          <option value="FAILED">FAILED</option>
+        </select>
+        <input id="filterKeyword" class="flex-1" placeholder="关键字筛选（jobname/database/bu/remark）" />
+        <button id="resetFilterBtn" class="btn-light">重置筛选</button>
+      </div>
+
       <table>
         <thead>
           <tr>
-            <th style="width: 16%;">Job 名称</th>
-            <th style="width: 16%;">所属集群</th>
+            <th style="width: 14%;">Job 名称</th>
+            <th style="width: 14%;">所属集群</th>
             <th style="width: 12%;">状态</th>
-            <th style="width: 18%;">备注</th>
+            <th style="width: 16%;">备注</th>
             <th>参数预览</th>
-            <th style="width: 90px;">操作</th>
+            <th style="width: 160px;">操作</th>
           </tr>
         </thead>
         <tbody id="jobBody"></tbody>
       </table>
+    </div>
+  </div>
+
+  <div id="paramsModalMask" class="modal-mask">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">Job 参数详情</div>
+        <button id="closeModalBtn" class="close-btn">关闭</button>
+      </div>
+      <div class="modal-body">
+        <pre id="paramsJsonBox" class="json-box">{}</pre>
+      </div>
     </div>
   </div>
 
@@ -93,6 +129,15 @@
     const addJobBtn = document.getElementById("addJobBtn");
     const parseAndAddBtn = document.getElementById("parseAndAddBtn");
     const body = document.getElementById("jobBody");
+
+    const filterCluster = document.getElementById("filterCluster");
+    const filterStatus = document.getElementById("filterStatus");
+    const filterKeyword = document.getElementById("filterKeyword");
+    const resetFilterBtn = document.getElementById("resetFilterBtn");
+
+    const paramsModalMask = document.getElementById("paramsModalMask");
+    const closeModalBtn = document.getElementById("closeModalBtn");
+    const paramsJsonBox = document.getElementById("paramsJsonBox");
 
     function load(key) {
       try {
@@ -110,6 +155,8 @@
     function renderClusterOptions() {
       const clusters = load(CLUSTER_KEY);
       jobCluster.innerHTML = "";
+      filterCluster.innerHTML = '<option value="">全部集群</option>';
+
       if (!clusters.length) {
         const opt = document.createElement("option");
         opt.value = "";
@@ -117,11 +164,19 @@
         jobCluster.appendChild(opt);
         return;
       }
+
       clusters.forEach((c) => {
-        const opt = document.createElement("option");
-        opt.value = c.name || "";
-        opt.textContent = c.name || "";
-        jobCluster.appendChild(opt);
+        const name = c.name || "";
+
+        const optAdd = document.createElement("option");
+        optAdd.value = name;
+        optAdd.textContent = name;
+        jobCluster.appendChild(optAdd);
+
+        const optFilter = document.createElement("option");
+        optFilter.value = name;
+        optFilter.textContent = name;
+        filterCluster.appendChild(optFilter);
       });
     }
 
@@ -162,8 +217,41 @@
       return parts.join("; ");
     }
 
-    function renderJobs() {
+    function getFilteredJobs() {
       const list = load(JOB_KEY);
+      const cluster = filterCluster.value;
+      const status = String(filterStatus.value || "").toUpperCase();
+      const keyword = String(filterKeyword.value || "").trim().toLowerCase();
+
+      return list.filter((item) => {
+        if (cluster && item.cluster !== cluster) return false;
+        const itemStatus = String(item.status || "").toUpperCase();
+        if (status && itemStatus !== status) return false;
+
+        if (!keyword) return true;
+        const params = item.params || {};
+        const hay = [
+          item.name || "",
+          item.remark || "",
+          params["jobname"] || "",
+          params["database"] || "",
+          params["bu"] || "",
+          params["job-type"] || ""
+        ].join(" ").toLowerCase();
+
+        return hay.includes(keyword);
+      });
+    }
+
+    function getStatusClass(status) {
+      const s = String(status || "").toUpperCase();
+      if (s === "RUNNING") return "running";
+      if (s === "FAILED") return "failed";
+      return "stopped";
+    }
+
+    function renderJobs() {
+      const list = getFilteredJobs();
       body.innerHTML = "";
       if (!list.length) {
         body.innerHTML = '<tr><td class="empty" colspan="6">暂无 Job</td></tr>';
@@ -171,7 +259,7 @@
       }
       list.forEach((item, i) => {
         const status = (item.status || "").toUpperCase();
-        const cls = status === "RUNNING" ? "running" : "stopped";
+        const cls = getStatusClass(status);
         const preview = buildParamsPreview(item.params);
         const tr = document.createElement("tr");
         tr.innerHTML = `
@@ -180,7 +268,10 @@
           <td><span class="tag ${cls}">${status || "UNKNOWN"}</span></td>
           <td>${item.remark || ""}</td>
           <td class="params-preview">${preview || "-"}</td>
-          <td><button class="btn-delete" data-delete="${i}">删除</button></td>
+          <td>
+            <button class="btn-view" data-view="${i}">查看参数</button>
+            <button class="btn-delete" data-delete="${i}">删除</button>
+          </td>
         `;
         body.appendChild(tr);
       });
@@ -235,16 +326,67 @@
       jobParams.value = "";
     }
 
+    function openParamsModal(job) {
+      const params = job && job.params ? job.params : null;
+      if (!params || !Object.keys(params).length) {
+        paramsJsonBox.textContent = "无参数信息";
+      } else {
+        paramsJsonBox.textContent = JSON.stringify(params, null, 2);
+      }
+      paramsModalMask.style.display = "flex";
+    }
+
+    function closeParamsModal() {
+      paramsModalMask.style.display = "none";
+    }
+
     addJobBtn.addEventListener("click", addJobManual);
     parseAndAddBtn.addEventListener("click", parseAndAddJob);
 
+    filterCluster.addEventListener("change", renderJobs);
+    filterStatus.addEventListener("change", renderJobs);
+    filterKeyword.addEventListener("input", renderJobs);
+
+    resetFilterBtn.addEventListener("click", () => {
+      filterCluster.value = "";
+      filterStatus.value = "";
+      filterKeyword.value = "";
+      renderJobs();
+    });
+
     body.addEventListener("click", (e) => {
+      const viewIdx = e.target.getAttribute("data-view");
+      if (viewIdx !== null) {
+        const filtered = getFilteredJobs();
+        const job = filtered[Number(viewIdx)];
+        openParamsModal(job);
+        return;
+      }
+
       const idx = e.target.getAttribute("data-delete");
       if (idx === null) return;
-      const list = load(JOB_KEY);
-      list.splice(Number(idx), 1);
-      save(JOB_KEY, list);
+      const filtered = getFilteredJobs();
+      const job = filtered[Number(idx)];
+      if (!job) return;
+
+      const all = load(JOB_KEY);
+      const realIndex = all.findIndex((x) =>
+        x.name === job.name &&
+        x.cluster === job.cluster &&
+        x.status === job.status &&
+        (x.remark || "") === (job.remark || "") &&
+        JSON.stringify(x.params || {}) === JSON.stringify(job.params || {})
+      );
+      if (realIndex < 0) return;
+
+      all.splice(realIndex, 1);
+      save(JOB_KEY, all);
       renderJobs();
+    });
+
+    closeModalBtn.addEventListener("click", closeParamsModal);
+    paramsModalMask.addEventListener("click", (e) => {
+      if (e.target === paramsModalMask) closeParamsModal();
     });
 
     renderClusterOptions();
