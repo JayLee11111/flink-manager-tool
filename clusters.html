@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flink Manager - 集群管理</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f7fb; color: #1f2329; }
+    .container { max-width: 1000px; margin: 0 auto; }
+    .nav { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+    .nav a { text-decoration: none; padding: 8px 12px; border-radius: 8px; border: 1px solid #d0d5dd; color: #344054; background: #fff; }
+    .nav a.active { background: #1677ff; color: #fff; border-color: #1677ff; }
+    .card { background: #fff; border: 1px solid #e6e8eb; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+    .form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    input { height: 40px; border: 1px solid #d0d5dd; border-radius: 8px; padding: 0 12px; font-size: 14px; }
+    .name-input { width: 220px; }
+    .url-input { flex: 1; min-width: 260px; }
+    button { height: 40px; border: 0; border-radius: 8px; padding: 0 14px; cursor: pointer; }
+    .btn-primary { background: #1677ff; color: #fff; }
+    .btn-open { background: #16a34a; color: #fff; margin-right: 8px; height: 34px; }
+    .btn-delete { background: #ef4444; color: #fff; height: 34px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
+    th, td { border-bottom: 1px solid #eef0f3; padding: 12px 8px; text-align: left; word-break: break-all; }
+    th { color: #475467; font-weight: 600; background: #fafafa; }
+    .empty { color: #98a2b3; text-align: center; padding: 18px 0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="nav">
+      <a href="./index.html">总览</a>
+      <a class="active" href="./clusters.html">集群管理</a>
+      <a href="./jobs.html">Job 管理</a>
+      <a href="./alerts.html">告警配置</a>
+    </div>
+
+    <div class="card">
+      <h1 style="margin:0 0 12px; font-size:24px;">集群管理</h1>
+      <div class="form-row">
+        <input id="clusterName" class="name-input" placeholder="集群名称" />
+        <input id="clusterUrl" class="url-input" placeholder="集群地址（http:// 或 https://）" />
+        <button id="addBtn" class="btn-primary">添加集群</button>
+      </div>
+      <div style="font-size:12px; color:#98a2b3; margin-top:10px;">打开时自动拼接：/overview</div>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead><tr><th style="width: 22%;">名称</th><th>地址</th><th style="width: 180px;">操作</th></tr></thead>
+        <tbody id="clusterBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const CLUSTER_KEY = "flink_clusters_v1";
+    const FIXED_PATH = "/overview";
+
+    const nameInput = document.getElementById("clusterName");
+    const urlInput = document.getElementById("clusterUrl");
+    const addBtn = document.getElementById("addBtn");
+    const body = document.getElementById("clusterBody");
+
+    function load() {
+      try {
+        const raw = localStorage.getItem(CLUSTER_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function save(list) {
+      localStorage.setItem(CLUSTER_KEY, JSON.stringify(list));
+    }
+
+    function normalizeBaseUrl(url) {
+      return String(url || "").trim().replace(/\/+$/, "");
+    }
+
+    function isValidHttpUrl(url) {
+      try {
+        const u = new URL(url);
+        return u.protocol === "http:" || u.protocol === "https:";
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function render() {
+      const list = load();
+      body.innerHTML = "";
+      if (!list.length) {
+        body.innerHTML = '<tr><td class="empty" colspan="3">暂无集群</td></tr>';
+        return;
+      }
+      list.forEach((item, i) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${item.name || ""}</td>
+          <td>${item.url || ""}</td>
+          <td>
+            <button class="btn-open" data-open="${i}">打开</button>
+            <button class="btn-delete" data-delete="${i}">删除</button>
+          </td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    function addCluster() {
+      const name = nameInput.value.trim();
+      const url = urlInput.value.trim();
+      if (!name) return alert("请输入集群名称");
+      if (!url) return alert("请输入集群地址");
+      if (!isValidHttpUrl(url)) return alert("地址格式不正确，请使用 http:// 或 https:// 开头");
+
+      const list = load();
+      list.push({ name, url: normalizeBaseUrl(url) });
+      save(list);
+      nameInput.value = "";
+      urlInput.value = "";
+      render();
+    }
+
+    addBtn.addEventListener("click", addCluster);
+    urlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addCluster(); });
+
+    body.addEventListener("click", (e) => {
+      const openIndex = e.target.getAttribute("data-open");
+      const deleteIndex = e.target.getAttribute("data-delete");
+      const list = load();
+
+      if (openIndex !== null) {
+        const item = list[Number(openIndex)];
+        if (!item) return;
+        window.open(normalizeBaseUrl(item.url) + FIXED_PATH, "_blank");
+        return;
+      }
+
+      if (deleteIndex !== null) {
+        list.splice(Number(deleteIndex), 1);
+        save(list);
+        render();
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>

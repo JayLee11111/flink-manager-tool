@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flink Manager - Job 管理</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f7fb; color: #1f2329; }
+    .container { max-width: 1000px; margin: 0 auto; }
+    .nav { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+    .nav a { text-decoration: none; padding: 8px 12px; border-radius: 8px; border: 1px solid #d0d5dd; color: #344054; background: #fff; }
+    .nav a.active { background: #1677ff; color: #fff; border-color: #1677ff; }
+    .card { background: #fff; border: 1px solid #e6e8eb; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+    .form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    input, select, textarea { border: 1px solid #d0d5dd; border-radius: 8px; padding: 0 12px; font-size: 14px; background: #fff; }
+    input, select { height: 40px; }
+    textarea { min-height: 92px; padding: 10px 12px; resize: vertical; width: 100%; }
+    .w-200 { width: 200px; }
+    .w-220 { width: 220px; }
+    .flex-1 { flex: 1; min-width: 240px; }
+    button { height: 40px; border: 0; border-radius: 8px; padding: 0 14px; cursor: pointer; }
+    .btn-primary { background: #1677ff; color: #fff; }
+    .btn-secondary { background: #2563eb; color: #fff; }
+    .btn-delete { background: #ef4444; color: #fff; height: 34px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
+    th, td { border-bottom: 1px solid #eef0f3; padding: 12px 8px; text-align: left; word-break: break-all; }
+    th { color: #475467; font-weight: 600; background: #fafafa; }
+    .empty { color: #98a2b3; text-align: center; padding: 18px 0; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #d0d5dd; }
+    .tag.running { color: #166534; background: #dcfce7; border-color: #86efac; }
+    .tag.stopped { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+    .hint { margin-top: 8px; color: #667085; font-size: 12px; }
+    .params-preview { color: #475467; font-size: 12px; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="nav">
+      <a href="./index.html">总览</a>
+      <a href="./clusters.html">集群管理</a>
+      <a class="active" href="./jobs.html">Job 管理</a>
+      <a href="./alerts.html">告警配置</a>
+    </div>
+
+    <div class="card">
+      <h1 style="margin:0 0 12px; font-size:24px;">Job 管理</h1>
+      <div class="form-row">
+        <input id="jobName" class="w-220" placeholder="Job 名称（可不填，优先取 --jobname）" />
+        <select id="jobCluster" class="w-220"></select>
+        <select id="jobStatus" class="w-200">
+          <option value="RUNNING">RUNNING</option>
+          <option value="STOPPED">STOPPED</option>
+        </select>
+        <input id="jobRemark" class="flex-1" placeholder="备注（可选）" />
+      </div>
+      <div style="margin-top:10px;">
+        <textarea id="jobParams" placeholder="粘贴参数，例如：--job-type mysql_cdc --init-table true --hiveConfDir /etc/hive/conf"></textarea>
+        <div class="hint">参数规则：按 --key value 解析，每个 key 仅一个 value。</div>
+      </div>
+      <div class="form-row" style="margin-top:10px;">
+        <button id="addJobBtn" class="btn-primary">添加 Job</button>
+        <button id="parseAndAddBtn" class="btn-secondary">解析参数并添加</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 16%;">Job 名称</th>
+            <th style="width: 16%;">所属集群</th>
+            <th style="width: 12%;">状态</th>
+            <th style="width: 18%;">备注</th>
+            <th>参数预览</th>
+            <th style="width: 90px;">操作</th>
+          </tr>
+        </thead>
+        <tbody id="jobBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const CLUSTER_KEY = "flink_clusters_v1";
+    const JOB_KEY = "flink_jobs_v1";
+
+    const jobName = document.getElementById("jobName");
+    const jobCluster = document.getElementById("jobCluster");
+    const jobStatus = document.getElementById("jobStatus");
+    const jobRemark = document.getElementById("jobRemark");
+    const jobParams = document.getElementById("jobParams");
+    const addJobBtn = document.getElementById("addJobBtn");
+    const parseAndAddBtn = document.getElementById("parseAndAddBtn");
+    const body = document.getElementById("jobBody");
+
+    function load(key) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function save(key, value) {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+
+    function renderClusterOptions() {
+      const clusters = load(CLUSTER_KEY);
+      jobCluster.innerHTML = "";
+      if (!clusters.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "请先到集群管理页添加集群";
+        jobCluster.appendChild(opt);
+        return;
+      }
+      clusters.forEach((c) => {
+        const opt = document.createElement("option");
+        opt.value = c.name || "";
+        opt.textContent = c.name || "";
+        jobCluster.appendChild(opt);
+      });
+    }
+
+    function parseParams(paramText) {
+      const text = String(paramText || "").trim();
+      if (!text) return {};
+      const tokens = text.split(/\s+/).filter(Boolean);
+      const result = {};
+      for (let i = 0; i < tokens.length; i++) {
+        const token = tokens[i];
+        if (!token.startsWith("--")) continue;
+        const key = token.slice(2);
+        const value = tokens[i + 1];
+        if (!key) continue;
+        if (!value || value.startsWith("--")) {
+          result[key] = "";
+          continue;
+        }
+        result[key] = value;
+        i += 1;
+      }
+      return result;
+    }
+
+    function buildParamsPreview(params) {
+      if (!params) return "";
+      const keys = ["job-type", "jobname", "database", "bu", "nacos.group-id"];
+      const parts = [];
+      keys.forEach((k) => {
+        if (params[k]) parts.push(`${k}=${params[k]}`);
+      });
+      if (!parts.length) {
+        const allKeys = Object.keys(params);
+        if (!allKeys.length) return "";
+        const first = allKeys.slice(0, 3).map((k) => `${k}=${params[k]}`);
+        return first.join("; ");
+      }
+      return parts.join("; ");
+    }
+
+    function renderJobs() {
+      const list = load(JOB_KEY);
+      body.innerHTML = "";
+      if (!list.length) {
+        body.innerHTML = '<tr><td class="empty" colspan="6">暂无 Job</td></tr>';
+        return;
+      }
+      list.forEach((item, i) => {
+        const status = (item.status || "").toUpperCase();
+        const cls = status === "RUNNING" ? "running" : "stopped";
+        const preview = buildParamsPreview(item.params);
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${item.name || ""}</td>
+          <td>${item.cluster || ""}</td>
+          <td><span class="tag ${cls}">${status || "UNKNOWN"}</span></td>
+          <td>${item.remark || ""}</td>
+          <td class="params-preview">${preview || "-"}</td>
+          <td><button class="btn-delete" data-delete="${i}">删除</button></td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    function addJob(job) {
+      const list = load(JOB_KEY);
+      list.push(job);
+      save(JOB_KEY, list);
+      renderJobs();
+    }
+
+    function addJobManual() {
+      const name = jobName.value.trim();
+      const cluster = jobCluster.value;
+      const status = jobStatus.value;
+      const remark = jobRemark.value.trim();
+
+      if (!name) return alert("请输入 Job 名称");
+      if (!cluster) return alert("请先选择所属集群");
+
+      addJob({ name, cluster, status, remark, params: {} });
+      jobName.value = "";
+      jobRemark.value = "";
+      jobParams.value = "";
+    }
+
+    function parseAndAddJob() {
+      const cluster = jobCluster.value;
+      const status = jobStatus.value;
+      const remark = jobRemark.value.trim();
+      const paramsText = jobParams.value.trim();
+
+      if (!cluster) return alert("请先选择所属集群");
+      if (!paramsText) return alert("请粘贴参数字符串");
+
+      const params = parseParams(paramsText);
+      const resolvedName = (params["jobname"] || "").trim() || jobName.value.trim();
+      if (!resolvedName) return alert("未解析到 --jobname，请填写 Job 名称");
+
+      addJob({
+        name: resolvedName,
+        cluster,
+        status,
+        remark,
+        params,
+        rawParams: paramsText
+      });
+
+      jobName.value = "";
+      jobRemark.value = "";
+      jobParams.value = "";
+    }
+
+    addJobBtn.addEventListener("click", addJobManual);
+    parseAndAddBtn.addEventListener("click", parseAndAddJob);
+
+    body.addEventListener("click", (e) => {
+      const idx = e.target.getAttribute("data-delete");
+      if (idx === null) return;
+      const list = load(JOB_KEY);
+      list.splice(Number(idx), 1);
+      save(JOB_KEY, list);
+      renderJobs();
+    });
+
+    renderClusterOptions();
+    renderJobs();
+  </script>
+</body>
+</html>

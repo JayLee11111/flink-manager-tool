@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flink Manager - 告警配置</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 24px; font-family: Arial, "PingFang SC", "Microsoft YaHei", sans-serif; background: #f5f7fb; color: #1f2329; }
+    .container { max-width: 1000px; margin: 0 auto; }
+    .nav { display: flex; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+    .nav a { text-decoration: none; padding: 8px 12px; border-radius: 8px; border: 1px solid #d0d5dd; color: #344054; background: #fff; }
+    .nav a.active { background: #1677ff; color: #fff; border-color: #1677ff; }
+    .card { background: #fff; border: 1px solid #e6e8eb; border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+    .form-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    input, select { height: 40px; border: 1px solid #d0d5dd; border-radius: 8px; padding: 0 12px; font-size: 14px; background: #fff; }
+    .w-180 { width: 180px; }
+    .w-220 { width: 220px; }
+    .flex-1 { flex: 1; min-width: 260px; }
+    button { height: 40px; border: 0; border-radius: 8px; padding: 0 14px; cursor: pointer; }
+    .btn-primary { background: #1677ff; color: #fff; }
+    .btn-toggle { background: #f59e0b; color: #fff; height: 34px; margin-right: 8px; }
+    .btn-delete { background: #ef4444; color: #fff; height: 34px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
+    th, td { border-bottom: 1px solid #eef0f3; padding: 12px 8px; text-align: left; word-break: break-all; }
+    th { color: #475467; font-weight: 600; background: #fafafa; }
+    .empty { color: #98a2b3; text-align: center; padding: 18px 0; }
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #d0d5dd; }
+    .tag.enabled { color: #166534; background: #dcfce7; border-color: #86efac; }
+    .tag.disabled { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="nav">
+      <a href="./index.html">总览</a>
+      <a href="./clusters.html">集群管理</a>
+      <a href="./jobs.html">Job 管理</a>
+      <a class="active" href="./alerts.html">告警配置</a>
+    </div>
+
+    <div class="card">
+      <h1 style="margin:0 0 12px; font-size:24px;">告警配置</h1>
+      <div class="form-row">
+        <input id="alertName" class="w-220" placeholder="告警名称" />
+        <select id="alertType" class="w-180">
+          <option value="JOB_FAILED">Job 失败</option>
+          <option value="CLUSTER_UNREACHABLE">集群不可达</option>
+        </select>
+        <select id="notifyType" class="w-180">
+          <option value="EMAIL">Email</option>
+          <option value="WEBHOOK">Webhook</option>
+        </select>
+        <input id="notifyTarget" class="flex-1" placeholder="通知目标（邮箱或 webhook 地址）" />
+        <button id="addAlertBtn" class="btn-primary">添加告警</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead><tr><th style="width: 16%;">名称</th><th style="width: 18%;">类型</th><th style="width: 12%;">通知方式</th><th>通知目标</th><th style="width: 10%;">状态</th><th style="width: 170px;">操作</th></tr></thead>
+        <tbody id="alertBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const ALERT_KEY = "flink_alerts_v1";
+
+    const alertName = document.getElementById("alertName");
+    const alertType = document.getElementById("alertType");
+    const notifyType = document.getElementById("notifyType");
+    const notifyTarget = document.getElementById("notifyTarget");
+    const addAlertBtn = document.getElementById("addAlertBtn");
+    const body = document.getElementById("alertBody");
+
+    function load() {
+      try {
+        const raw = localStorage.getItem(ALERT_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function save(list) {
+      localStorage.setItem(ALERT_KEY, JSON.stringify(list));
+    }
+
+    function render() {
+      const list = load();
+      body.innerHTML = "";
+      if (!list.length) {
+        body.innerHTML = '<tr><td class="empty" colspan="6">暂无告警配置</td></tr>';
+        return;
+      }
+
+      list.forEach((item, i) => {
+        const tr = document.createElement("tr");
+        const cls = item.enabled ? "enabled" : "disabled";
+        const txt = item.enabled ? "启用" : "禁用";
+        tr.innerHTML = `
+          <td>${item.name || ""}</td>
+          <td>${item.type || ""}</td>
+          <td>${item.notifyType || ""}</td>
+          <td>${item.target || ""}</td>
+          <td><span class="tag ${cls}">${txt}</span></td>
+          <td>
+            <button class="btn-toggle" data-toggle="${i}">${item.enabled ? "停用" : "启用"}</button>
+            <button class="btn-delete" data-delete="${i}">删除</button>
+          </td>
+        `;
+        body.appendChild(tr);
+      });
+    }
+
+    function addAlert() {
+      const name = alertName.value.trim();
+      const type = alertType.value;
+      const nType = notifyType.value;
+      const target = notifyTarget.value.trim();
+
+      if (!name) return alert("请输入告警名称");
+      if (!target) return alert("请输入通知目标");
+
+      const list = load();
+      list.push({ name, type, notifyType: nType, target, enabled: true });
+      save(list);
+
+      alertName.value = "";
+      notifyTarget.value = "";
+      render();
+    }
+
+    addAlertBtn.addEventListener("click", addAlert);
+
+    body.addEventListener("click", (e) => {
+      const t = e.target.getAttribute("data-toggle");
+      const d = e.target.getAttribute("data-delete");
+      const list = load();
+
+      if (t !== null) {
+        const i = Number(t);
+        if (!list[i]) return;
+        list[i].enabled = !list[i].enabled;
+        save(list);
+        render();
+        return;
+      }
+
+      if (d !== null) {
+        list.splice(Number(d), 1);
+        save(list);
+        render();
+      }
+    });
+
+    render();
+  </script>
+</body>
+</html>
