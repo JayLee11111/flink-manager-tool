@@ -32,6 +32,7 @@
     .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #d0d5dd; }
     .tag.running { color: #166534; background: #dcfce7; border-color: #86efac; }
     .tag.stopped { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+    .tag.unknown { color: #6b7280; background: #f3f4f6; border-color: #d1d5db; }
   </style>
 </head>
 <body>
@@ -49,10 +50,11 @@
       <div id="refreshHint" class="refresh-hint">最近刷新：未开始</div>
       <div class="kpi-grid">
         <div class="kpi"><div class="kpi-title">集群总数</div><div id="kpiClusterTotal" class="kpi-value">0</div></div>
-        <div class="kpi"><div class="kpi-title">在线集群数</div><div id="kpiClusterOnline" class="kpi-value">0</div></div>
-        <div class="kpi"><div class="kpi-title">Job 总数</div><div id="kpiJobTotal" class="kpi-value">0</div></div>
-        <div class="kpi"><div class="kpi-title">RUNNING Job</div><div id="kpiJobRunning" class="kpi-value">0</div></div>
-        <div class="kpi"><div class="kpi-title">FAILED Job</div><div id="kpiJobFailed" class="kpi-value">0</div></div>
+        <div class="kpi"><div class="kpi-title">可访问集群数</div><div id="kpiClusterOnline" class="kpi-value">0</div></div>
+        <div class="kpi"><div class="kpi-title">不可访问集群数</div><div id="kpiClusterOffline" class="kpi-value">0</div></div>
+        <div class="kpi"><div class="kpi-title">监控 Job 总数</div><div id="kpiJobTotal" class="kpi-value">0</div></div>
+        <div class="kpi"><div class="kpi-title">可检测 Job 数</div><div id="kpiJobDetected" class="kpi-value">0</div></div>
+        <div class="kpi"><div class="kpi-title">不可检测 Job 数</div><div id="kpiJobUndetected" class="kpi-value">0</div></div>
         <div class="kpi"><div class="kpi-title">启用告警数</div><div id="kpiAlertEnabled" class="kpi-value">0</div></div>
       </div>
     </div>
@@ -60,7 +62,7 @@
     <div class="card">
       <h2 style="margin:0; font-size:18px;">集群信息</h2>
       <table>
-        <thead><tr><th style="width: 22%;">名称</th><th>地址</th><th style="width: 130px;">操作</th></tr></thead>
+        <thead><tr><th style="width: 22%;">名称</th><th>地址</th><th style="width: 12%;">状态</th><th style="width: 22%;">最近检测</th><th style="width: 130px;">操作</th></tr></thead>
         <tbody id="clusterBody"></tbody>
       </table>
     </div>
@@ -68,7 +70,7 @@
     <div class="card">
       <h2 style="margin:0; font-size:18px;">Job 信息</h2>
       <table>
-        <thead><tr><th style="width: 20%;">Job 名称</th><th style="width: 20%;">所属集群</th><th style="width: 15%;">状态</th><th>备注</th></tr></thead>
+        <thead><tr><th style="width: 22%;">Job 名称</th><th style="width: 20%;">所属集群</th><th style="width: 18%;">检测结果</th><th style="width: 15%;">实时状态</th><th>备注</th></tr></thead>
         <tbody id="jobBody"></tbody>
       </table>
     </div>
@@ -78,8 +80,10 @@
   <script>
     const CLUSTER_KEY = "flink_clusters_v1";
     const JOB_KEY = "flink_jobs_v1";
+    const DETECTED_JOB_KEY = "flink_detected_jobs_v1";
     const ALERT_KEY = "flink_alerts_v1";
-    const FIXED_PATH = "/overview";
+    const CLUSTER_HEALTH_KEY = window.DataAccess.CLUSTER_HEALTH_KEY || "flink_cluster_health_v1";
+    const FIXED_PATH = "/";
     const REFRESH_HINT_ID = "refreshHint";
     let hasAutoRefreshed = false;
     let refreshingOverview = false;
@@ -104,6 +108,14 @@
       const value = Number(ts);
       if (!Number.isFinite(value) || value <= 0) return "";
       return new Date(value).toLocaleString("zh-CN");
+    }
+
+    function normalizeKeyPart(value) {
+      return String(value || "").trim().toUpperCase();
+    }
+
+    function toJobKey(cluster, name) {
+      return normalizeKeyPart(cluster) + "::" + normalizeKeyPart(name);
     }
 
     function setRefreshHint(status, text) {
@@ -146,29 +158,6 @@
       });
     }
 
-    function buildRemarkMap(existingJobs) {
-      const map = {};
-      (existingJobs || []).forEach((item) => {
-        const cluster = String(item && item.cluster || "");
-        const name = String(item && item.name || "");
-        const jobId = String(item && (item.flinkJobId || (item.params && item.params["job-id"])) || "");
-        const remark = String(item && item.remark || "");
-        if (!remark || !cluster || !name) return;
-        map[cluster + "::" + name] = remark;
-        if (jobId) map[cluster + "::" + jobId] = remark;
-      });
-      return map;
-    }
-
-    function mergeRemarks(jobs, remarkMap) {
-      return jobs.map((job) => {
-        const keyByName = job.cluster + "::" + job.name;
-        const keyById = job.cluster + "::" + String(job.flinkJobId || "");
-        const remark = remarkMap[keyById] || remarkMap[keyByName] || "";
-        return Object.assign({}, job, { remark });
-      });
-    }
-
     async function refreshAndRender() {
       await renderKpi();
       await renderClusters();
@@ -181,47 +170,57 @@
       try {
         const clusters = await load(CLUSTER_KEY);
         if (!clusters.length) {
-          save(JOB_KEY, []);
+          save(DETECTED_JOB_KEY, []);
+          save(CLUSTER_HEALTH_KEY, {});
           await refreshAndRender();
-          setRefreshHint("success", "刷新完成：当前无集群，Job 数据已清空。");
+          setRefreshHint("success", "刷新完成：当前无集群。");
           return;
         }
 
         setRefreshHint("refreshing", "刷新中：正在并发拉取 " + clusters.length + " 个集群的 Job...");
         const settled = await Promise.allSettled(clusters.map((cluster) => fetchClusterJobs(cluster)));
+        const clusterHealthMap = {};
         const failedClusters = [];
         const successJobs = [];
 
         settled.forEach((item, index) => {
+          const clusterName = clusters[index] && clusters[index].name ? String(clusters[index].name) : "UNKNOWN";
           if (item.status === "fulfilled") {
+            clusterHealthMap[clusterName] = {
+              status: "在线",
+              checkedAt: Date.now(),
+              error: ""
+            };
             successJobs.push.apply(successJobs, item.value || []);
             return;
           }
-          const clusterName = clusters[index] && clusters[index].name ? String(clusters[index].name) : "UNKNOWN";
           const reason = item.reason && item.reason.message ? String(item.reason.message) : "UNKNOWN_ERROR";
+          clusterHealthMap[clusterName] = {
+            status: "离线",
+            checkedAt: Date.now(),
+            error: reason
+          };
           failedClusters.push(clusterName + " (" + reason + ")");
         });
 
         const successCount = clusters.length - failedClusters.length;
+        save(CLUSTER_HEALTH_KEY, clusterHealthMap);
+        save(DETECTED_JOB_KEY, successJobs);
+        await refreshAndRender();
+
         if (successCount === 0) {
-          setRefreshHint("error", "刷新失败：全部 " + clusters.length + " 个集群拉取失败，已保留旧数据。失败详情：" + failedClusters.join("，"));
+          setRefreshHint("error", "刷新失败：全部 " + clusters.length + " 个集群不可访问。失败详情：" + failedClusters.join("，"));
           return;
         }
-
-        const oldJobs = await load(JOB_KEY);
-        const remarkMap = buildRemarkMap(oldJobs);
-        const mergedJobs = mergeRemarks(successJobs, remarkMap);
-        save(JOB_KEY, mergedJobs);
-        await refreshAndRender();
 
         if (failedClusters.length) {
           setRefreshHint(
             "warning",
-            "部分刷新失败：成功 " + successCount + "/" + clusters.length + " 个集群，已更新成功集群数据；失败集群：" + failedClusters.join("，")
+            "部分刷新完成：可访问 " + successCount + "/" + clusters.length + " 个集群；不可访问集群：" + failedClusters.join("，")
           );
           return;
         }
-        setRefreshHint("success", "刷新完成：全部 " + clusters.length + " 个集群拉取成功，已更新总览。");
+        setRefreshHint("success", "刷新完成：全部 " + clusters.length + " 个集群可访问。");
       } finally {
         refreshingOverview = false;
       }
@@ -229,34 +228,49 @@
 
     async function renderKpi() {
       const clusters = await load(CLUSTER_KEY);
-      const jobs = await load(JOB_KEY);
+      const configuredJobs = await load(JOB_KEY);
+      const detectedJobs = await load(DETECTED_JOB_KEY);
+      const healthMap = await load(CLUSTER_HEALTH_KEY);
       const alerts = await load(ALERT_KEY);
 
-      const running = jobs.filter((j) => String(j.status || "").toUpperCase() === "RUNNING").length;
-      const failed = jobs.filter((j) => String(j.status || "").toUpperCase() === "FAILED").length;
+      const online = clusters.filter((c) => healthMap && healthMap[c.name] && healthMap[c.name].status === "在线").length;
+      const offline = Math.max(clusters.length - online, 0);
       const enabledAlerts = alerts.filter((a) => a && a.enabled !== false).length;
+      const detectedMap = {};
+      (detectedJobs || []).forEach((j) => {
+        detectedMap[toJobKey(j.cluster, j.name)] = true;
+      });
+      const detectedCount = (configuredJobs || []).filter((j) => detectedMap[toJobKey(j.cluster, j.name)]).length;
+      const undetectedCount = Math.max(configuredJobs.length - detectedCount, 0);
 
       document.getElementById("kpiClusterTotal").textContent = String(clusters.length);
-      document.getElementById("kpiClusterOnline").textContent = String(clusters.length);
-      document.getElementById("kpiJobTotal").textContent = String(jobs.length);
-      document.getElementById("kpiJobRunning").textContent = String(running);
-      document.getElementById("kpiJobFailed").textContent = String(failed);
+      document.getElementById("kpiClusterOnline").textContent = String(online);
+      document.getElementById("kpiClusterOffline").textContent = String(offline);
+      document.getElementById("kpiJobTotal").textContent = String(configuredJobs.length);
+      document.getElementById("kpiJobDetected").textContent = String(detectedCount);
+      document.getElementById("kpiJobUndetected").textContent = String(undetectedCount);
       document.getElementById("kpiAlertEnabled").textContent = String(enabledAlerts);
     }
 
     async function renderClusters() {
       const body = document.getElementById("clusterBody");
       const list = await load(CLUSTER_KEY);
+      const healthMap = await load(CLUSTER_HEALTH_KEY);
       body.innerHTML = "";
       if (!list.length) {
-        body.innerHTML = '<tr><td class="empty" colspan="3">暂无集群</td></tr>';
+        body.innerHTML = '<tr><td class="empty" colspan="5">暂无集群</td></tr>';
         return;
       }
       list.forEach((item) => {
+        const health = healthMap && healthMap[item.name] ? healthMap[item.name] : {};
+        const status = health.status || window.DataAccess.UNKNOWN_TEXT;
+        const statusCls = status === "在线" ? "running" : (status === "离线" ? "stopped" : "unknown");
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${item.name || ""}</td>
           <td>${item.url || ""}</td>
+          <td><span class="tag ${statusCls}">${status}</span></td>
+          <td>${formatTime(health.checkedAt) || "-"}</td>
           <td><button class="btn-open" data-url="${item.url || ""}">打开</button></td>
         `;
         body.appendChild(tr);
@@ -273,20 +287,29 @@
 
     async function renderJobs() {
       const body = document.getElementById("jobBody");
-      const list = await load(JOB_KEY);
+      const configuredJobs = await load(JOB_KEY);
+      const detectedJobs = await load(DETECTED_JOB_KEY);
+      const detectedByKey = {};
+      (detectedJobs || []).forEach((item) => {
+        detectedByKey[toJobKey(item.cluster, item.name)] = item;
+      });
       body.innerHTML = "";
-      if (!list.length) {
-        body.innerHTML = '<tr><td class="empty" colspan="4">暂无 Job</td></tr>';
+      if (!configuredJobs.length) {
+        body.innerHTML = '<tr><td class="empty" colspan="5">暂无 Job</td></tr>';
         return;
       }
-      list.forEach((item) => {
-        const status = (item.status || "").toUpperCase();
-        const cls = status === "RUNNING" ? "running" : "stopped";
+      configuredJobs.forEach((item) => {
+        const detected = detectedByKey[toJobKey(item.cluster, item.name)];
+        const detectText = detected ? "可检测" : "不可检测";
+        const detectCls = detected ? "running" : "stopped";
+        const status = String((detected && detected.status) || "UNKNOWN").toUpperCase();
+        const statusCls = status === "RUNNING" ? "running" : (status === "UNKNOWN" ? "unknown" : "stopped");
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${item.name || ""}</td>
           <td>${item.cluster || ""}</td>
-          <td><span class="tag ${cls}">${status || "UNKNOWN"}</span></td>
+          <td><span class="tag ${detectCls}">${detectText}</span></td>
+          <td><span class="tag ${statusCls}">${status || "UNKNOWN"}</span></td>
           <td>${item.remark || ""}</td>
         `;
         body.appendChild(tr);

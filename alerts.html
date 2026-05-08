@@ -35,6 +35,12 @@
     .sev.P3 { color: #1e3a8a; background: #dbeafe; border-color: #93c5fd; }
     .record-ok { color: #166534; }
     .record-failed { color: #991b1b; }
+    textarea { width: 100%; min-height: 220px; border: 1px solid #d0d5dd; border-radius: 8px; padding: 10px 12px; font-size: 13px; resize: vertical; background: #fff; }
+    .hint { margin-top: 8px; color: #667085; font-size: 12px; }
+    .btn-import { background: #2563eb; color: #fff; }
+    .btn-load-sample { background: #475467; color: #fff; }
+    .import-result { margin-top: 10px; font-size: 13px; color: #166534; }
+    .import-result.error { color: #991b1b; }
   </style>
 </head>
 <body>
@@ -69,6 +75,19 @@
         <input id="rule" class="flex-1" placeholder="规则条件（例如：连续失败 3 次）" />
         <button id="addAlertBtn" class="btn-primary">添加告警</button>
       </div>
+    </div>
+
+    <div class="card">
+      <h2 style="margin:0 0 8px; font-size:18px;">监控配置 JSON 导入</h2>
+      <textarea id="monitorConfigJson" placeholder="粘贴监控配置 JSON（包含 preSubject/clusterPreSubject/address/clusters）"></textarea>
+      <div class="form-row" style="margin-top:10px;">
+        <button id="importConfigBtn" class="btn-import">导入并合并监控对象</button>
+        <button id="loadSampleBtn" class="btn-load-sample">填充示例</button>
+      </div>
+      <div class="hint">
+        导入后将按集群名合并：同名集群会用新配置全量替换其下 Job（含新增/删除），其他集群和 Job 保留不变。
+      </div>
+      <div id="importResult" class="import-result"></div>
     </div>
 
     <div class="card">
@@ -109,7 +128,10 @@
   <script src="./data-access.js"></script>
   <script>
     const ALERT_KEY = "flink_alerts_v1";
+    const CLUSTER_KEY = "flink_clusters_v1";
+    const JOB_KEY = "flink_jobs_v1";
     const ALERT_RECORD_KEY = "flink_alert_records_v1";
+    const ALERT_MONITOR_CONFIG_KEY = "flink_alert_monitor_config_v1";
     const ALERT_RECORD_LIMIT = 100;
 
     const alertName = document.getElementById("alertName");
@@ -121,6 +143,29 @@
     const addAlertBtn = document.getElementById("addAlertBtn");
     const body = document.getElementById("alertBody");
     const recordBody = document.getElementById("recordBody");
+    const monitorConfigJson = document.getElementById("monitorConfigJson");
+    const importConfigBtn = document.getElementById("importConfigBtn");
+    const loadSampleBtn = document.getElementById("loadSampleBtn");
+    const importResult = document.getElementById("importResult");
+
+    const SAMPLE_IMPORT_JSON = {
+      preSubject: "[TECHLAB-MDM-ASIA-UAT-FLINK-JOB] Job exception list ",
+      clusterPreSubject: "[TECHLAB-MDM-ASIA-UAT-FLINK-Cluster] Cluster down",
+      address: "git.techlabmdmsupport@aswatson.com",
+      mailGaps: "150",
+      maxRetry: "10",
+      retryGap: "60000",
+      clusters: [
+        {
+          path: "http://example.com/flink/cluster-a",
+          names: "JOB_A,JOB_B"
+        },
+        {
+          path: "http://example.com/flink/cluster-b",
+          names: "JOB_C"
+        }
+      ]
+    };
 
     function load() {
       return window.DataAccess.load(ALERT_KEY);
@@ -128,6 +173,14 @@
 
     function save(list) {
       return window.DataAccess.save(ALERT_KEY, list);
+    }
+
+    function saveClusters(list) {
+      return window.DataAccess.save(CLUSTER_KEY, list);
+    }
+
+    function saveJobs(list) {
+      return window.DataAccess.save(JOB_KEY, list);
     }
 
     function loadRecords() {
@@ -219,6 +272,192 @@
       saveRecords(next);
     }
 
+    function normalizeBaseUrl(url) {
+      return String(url || "").trim().replace(/\/+$/, "");
+    }
+
+    function buildClusterName(item, path) {
+      const explicit = String(item && item.name || "").trim();
+      if (explicit) return explicit;
+      const base = normalizeBaseUrl(path);
+      if (!base) return "";
+      const segments = base.split("/").filter(Boolean);
+      return segments[segments.length - 1] || base;
+    }
+
+    function splitJobNames(namesText) {
+      return String(namesText || "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+    }
+
+    function setImportResult(text, isError) {
+      importResult.textContent = text || "";
+      importResult.className = isError ? "import-result error" : "import-result";
+    }
+
+    function upsertDefaultAlerts(importedAlerts) {
+      if (!importedAlerts.length) return;
+      const current = load();
+      const map = {};
+      current.forEach((item) => {
+        const key = String(item.type || "") + "::" + String(item.name || "");
+        map[key] = item;
+      });
+      importedAlerts.forEach((item) => {
+        const key = String(item.type || "") + "::" + String(item.name || "");
+        map[key] = item;
+      });
+      save(Object.keys(map).map((k) => map[k]));
+    }
+
+    function buildDefaultAlerts(config) {
+      const target = String(config && config.address || "").trim();
+      const preSubject = String(config && config.preSubject || "").trim();
+      const clusterPreSubject = String(config && config.clusterPreSubject || "").trim();
+      if (!target) return [];
+      return [
+        {
+          name: preSubject || "Job 异常通知",
+          type: "JOB_FAILED",
+          severity: "P1",
+          notifyType: "EMAIL",
+          target: target,
+          rule: "由监控配置 JSON 导入",
+          enabled: true
+        },
+        {
+          name: clusterPreSubject || "集群不可达通知",
+          type: "CLUSTER_UNREACHABLE",
+          severity: "P1",
+          notifyType: "EMAIL",
+          target: target,
+          rule: "由监控配置 JSON 导入",
+          enabled: true
+        }
+      ];
+    }
+
+    function importMonitorConfig() {
+      const raw = monitorConfigJson.value.trim();
+      if (!raw) {
+        setImportResult("请先粘贴 JSON 配置。", true);
+        return;
+      }
+      let config;
+      try {
+        config = JSON.parse(raw);
+      } catch (_) {
+        setImportResult("JSON 解析失败，请检查格式。", true);
+        return;
+      }
+
+      const clustersInput = Array.isArray(config && config.clusters) ? config.clusters : [];
+      if (!clustersInput.length) {
+        setImportResult("JSON 缺少 clusters 列表。", true);
+        return;
+      }
+
+      const importedClusterMap = {};
+      const importedClusters = [];
+
+      clustersInput.forEach((item) => {
+        const path = normalizeBaseUrl(item && item.path);
+        if (!path) return;
+        const clusterName = buildClusterName(item, path);
+        if (!clusterName) return;
+        if (!importedClusterMap[clusterName]) {
+          importedClusterMap[clusterName] = {
+            name: clusterName,
+            url: path,
+            jobs: [],
+            jobNameSet: {}
+          };
+          importedClusters.push(importedClusterMap[clusterName]);
+        } else {
+          importedClusterMap[clusterName].url = path;
+        }
+
+        const names = splitJobNames(item && item.names);
+        names.forEach((jobName) => {
+          if (!importedClusterMap[clusterName].jobNameSet[jobName]) {
+            importedClusterMap[clusterName].jobNameSet[jobName] = true;
+            importedClusterMap[clusterName].jobs.push(jobName);
+          }
+        });
+      });
+
+      if (!importedClusters.length) {
+        setImportResult("未识别到有效集群 path。", true);
+        return;
+      }
+
+      const existingClusters = window.DataAccess.load(CLUSTER_KEY) || [];
+      const existingJobs = window.DataAccess.load(JOB_KEY) || [];
+      const mergedClusterMap = {};
+      existingClusters.forEach((item) => {
+        if (!item || !item.name) return;
+        mergedClusterMap[item.name] = item;
+      });
+
+      let addedClusters = 0;
+      let updatedClusters = 0;
+      importedClusters.forEach((cluster) => {
+        if (mergedClusterMap[cluster.name]) {
+          updatedClusters += 1;
+          mergedClusterMap[cluster.name] = Object.assign({}, mergedClusterMap[cluster.name], {
+            name: cluster.name,
+            url: cluster.url
+          });
+        } else {
+          addedClusters += 1;
+          mergedClusterMap[cluster.name] = {
+            name: cluster.name,
+            url: cluster.url
+          };
+        }
+      });
+
+      const importedClusterNameSet = {};
+      importedClusters.forEach((x) => { importedClusterNameSet[x.name] = true; });
+      const retainedJobs = existingJobs.filter((item) => !importedClusterNameSet[String(item && item.cluster || "")]);
+      const importedJobs = [];
+      importedClusters.forEach((cluster) => {
+        cluster.jobs.forEach((jobName) => {
+          importedJobs.push({
+            name: jobName,
+            cluster: cluster.name,
+            status: "UNKNOWN",
+            remark: "from alert config",
+            params: {}
+          });
+        });
+      });
+      const mergedJobs = retainedJobs.concat(importedJobs);
+
+      saveClusters(Object.keys(mergedClusterMap).map((k) => mergedClusterMap[k]));
+      saveJobs(mergedJobs);
+      window.DataAccess.save(ALERT_MONITOR_CONFIG_KEY, {
+        preSubject: String(config.preSubject || ""),
+        clusterPreSubject: String(config.clusterPreSubject || ""),
+        address: String(config.address || ""),
+        mailGaps: String(config.mailGaps || ""),
+        maxRetry: String(config.maxRetry || ""),
+        retryGap: String(config.retryGap || "")
+      });
+
+      const nextAlerts = buildDefaultAlerts(config);
+      upsertDefaultAlerts(nextAlerts);
+
+      const replacedClusterJobs = existingJobs.length - retainedJobs.length;
+      setImportResult(
+        "导入成功：新增集群 " + addedClusters + " 个，更新同名集群 " + updatedClusters + " 个；替换 Job " +
+        replacedClusterJobs + " 个，导入 Job " + importedJobs.length + " 个。"
+      );
+      render();
+    }
+
     function addAlert() {
       const name = alertName.value.trim();
       const type = alertType.value;
@@ -251,6 +490,11 @@
     }
 
     addAlertBtn.addEventListener("click", addAlert);
+    importConfigBtn.addEventListener("click", importMonitorConfig);
+    loadSampleBtn.addEventListener("click", () => {
+      monitorConfigJson.value = JSON.stringify(SAMPLE_IMPORT_JSON, null, 2);
+      setImportResult("");
+    });
 
     body.addEventListener("click", (e) => {
       const t = e.target.getAttribute("data-toggle");
