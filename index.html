@@ -18,6 +18,11 @@
     .kpi { border: 1px solid #e6e8eb; border-radius: 10px; padding: 12px; background: #fafcff; }
     .kpi-title { font-size: 12px; color: #667085; margin-bottom: 8px; }
     .kpi-value { font-size: 22px; font-weight: 700; color: #111827; }
+    .refresh-hint { margin-top: 10px; font-size: 13px; color: #667085; }
+    .refresh-hint.refreshing { color: #1d4ed8; }
+    .refresh-hint.success { color: #166534; }
+    .refresh-hint.warning { color: #92400e; }
+    .refresh-hint.error { color: #991b1b; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
     th, td { border-bottom: 1px solid #eef0f3; padding: 12px 8px; text-align: left; word-break: break-all; }
     th { color: #475467; font-weight: 600; background: #fafafa; }
@@ -41,6 +46,7 @@
     <div class="card">
       <h1>Flink Manager 总览</h1>
       <p class="desc">展示集群与 Job 信息（只读总览）。</p>
+      <div id="refreshHint" class="refresh-hint">最近刷新：未开始</div>
       <div class="kpi-grid">
         <div class="kpi"><div class="kpi-title">集群总数</div><div id="kpiClusterTotal" class="kpi-value">0</div></div>
         <div class="kpi"><div class="kpi-title">在线集群数</div><div id="kpiClusterOnline" class="kpi-value">0</div></div>
@@ -68,29 +74,163 @@
     </div>
   </div>
 
+  <script src="./data-access.js"></script>
   <script>
     const CLUSTER_KEY = "flink_clusters_v1";
     const JOB_KEY = "flink_jobs_v1";
     const ALERT_KEY = "flink_alerts_v1";
     const FIXED_PATH = "/overview";
+    const REFRESH_HINT_ID = "refreshHint";
+    let hasAutoRefreshed = false;
+    let refreshingOverview = false;
 
-    function load(key) {
-      try {
-        const raw = localStorage.getItem(key);
-        return raw ? JSON.parse(raw) : [];
-      } catch (_) {
-        return [];
+    async function load(key) {
+      const value = window.DataAccess.load(key);
+      if (value && typeof value.then === "function") {
+        return value;
       }
+      return value;
+    }
+
+    function save(key, value) {
+      return window.DataAccess.save(key, value);
     }
 
     function normalizeBaseUrl(url) {
       return String(url || "").trim().replace(/\/+$/, "");
     }
 
-    function renderKpi() {
-      const clusters = load(CLUSTER_KEY);
-      const jobs = load(JOB_KEY);
-      const alerts = load(ALERT_KEY);
+    function formatTime(ts) {
+      const value = Number(ts);
+      if (!Number.isFinite(value) || value <= 0) return "";
+      return new Date(value).toLocaleString("zh-CN");
+    }
+
+    function setRefreshHint(status, text) {
+      const el = document.getElementById(REFRESH_HINT_ID);
+      if (!el) return;
+      el.className = "refresh-hint " + (status || "");
+      el.textContent = text || "";
+    }
+
+    async function fetchJson(url) {
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error("HTTP_" + res.status);
+      }
+      return res.json();
+    }
+
+    async function fetchClusterJobs(cluster) {
+      const clusterName = cluster && cluster.name ? String(cluster.name) : "";
+      const base = normalizeBaseUrl(cluster && cluster.url);
+      if (!clusterName) throw new Error("EMPTY_CLUSTER_NAME");
+      if (!base) throw new Error("EMPTY_CLUSTER_URL");
+
+      const overview = await fetchJson(base + "/jobs/overview");
+      const jobs = Array.isArray(overview && overview.jobs) ? overview.jobs : [];
+      return jobs.map((job) => {
+        const flinkJobId = String((job && job.jid) || "");
+        const startTimestamp = Number(job && job["start-time"]);
+        const status = String((job && job.state) || "").toUpperCase() || "UNKNOWN";
+        return {
+          name: String((job && job.name) || flinkJobId || "UNKNOWN"),
+          cluster: clusterName,
+          status,
+          remark: "",
+          flinkJobId,
+          startTime: formatTime(startTimestamp),
+          uptime: window.DataAccess.UNKNOWN_TEXT,
+          checkpointTime: window.DataAccess.UNKNOWN_TEXT
+        };
+      });
+    }
+
+    function buildRemarkMap(existingJobs) {
+      const map = {};
+      (existingJobs || []).forEach((item) => {
+        const cluster = String(item && item.cluster || "");
+        const name = String(item && item.name || "");
+        const jobId = String(item && (item.flinkJobId || (item.params && item.params["job-id"])) || "");
+        const remark = String(item && item.remark || "");
+        if (!remark || !cluster || !name) return;
+        map[cluster + "::" + name] = remark;
+        if (jobId) map[cluster + "::" + jobId] = remark;
+      });
+      return map;
+    }
+
+    function mergeRemarks(jobs, remarkMap) {
+      return jobs.map((job) => {
+        const keyByName = job.cluster + "::" + job.name;
+        const keyById = job.cluster + "::" + String(job.flinkJobId || "");
+        const remark = remarkMap[keyById] || remarkMap[keyByName] || "";
+        return Object.assign({}, job, { remark });
+      });
+    }
+
+    async function refreshAndRender() {
+      await renderKpi();
+      await renderClusters();
+      await renderJobs();
+    }
+
+    async function refreshAllClustersJobOverview() {
+      if (refreshingOverview) return;
+      refreshingOverview = true;
+      try {
+        const clusters = await load(CLUSTER_KEY);
+        if (!clusters.length) {
+          save(JOB_KEY, []);
+          await refreshAndRender();
+          setRefreshHint("success", "刷新完成：当前无集群，Job 数据已清空。");
+          return;
+        }
+
+        setRefreshHint("refreshing", "刷新中：正在并发拉取 " + clusters.length + " 个集群的 Job...");
+        const settled = await Promise.allSettled(clusters.map((cluster) => fetchClusterJobs(cluster)));
+        const failedClusters = [];
+        const successJobs = [];
+
+        settled.forEach((item, index) => {
+          if (item.status === "fulfilled") {
+            successJobs.push.apply(successJobs, item.value || []);
+            return;
+          }
+          const clusterName = clusters[index] && clusters[index].name ? String(clusters[index].name) : "UNKNOWN";
+          const reason = item.reason && item.reason.message ? String(item.reason.message) : "UNKNOWN_ERROR";
+          failedClusters.push(clusterName + " (" + reason + ")");
+        });
+
+        const successCount = clusters.length - failedClusters.length;
+        if (successCount === 0) {
+          setRefreshHint("error", "刷新失败：全部 " + clusters.length + " 个集群拉取失败，已保留旧数据。失败详情：" + failedClusters.join("，"));
+          return;
+        }
+
+        const oldJobs = await load(JOB_KEY);
+        const remarkMap = buildRemarkMap(oldJobs);
+        const mergedJobs = mergeRemarks(successJobs, remarkMap);
+        save(JOB_KEY, mergedJobs);
+        await refreshAndRender();
+
+        if (failedClusters.length) {
+          setRefreshHint(
+            "warning",
+            "部分刷新失败：成功 " + successCount + "/" + clusters.length + " 个集群，已更新成功集群数据；失败集群：" + failedClusters.join("，")
+          );
+          return;
+        }
+        setRefreshHint("success", "刷新完成：全部 " + clusters.length + " 个集群拉取成功，已更新总览。");
+      } finally {
+        refreshingOverview = false;
+      }
+    }
+
+    async function renderKpi() {
+      const clusters = await load(CLUSTER_KEY);
+      const jobs = await load(JOB_KEY);
+      const alerts = await load(ALERT_KEY);
 
       const running = jobs.filter((j) => String(j.status || "").toUpperCase() === "RUNNING").length;
       const failed = jobs.filter((j) => String(j.status || "").toUpperCase() === "FAILED").length;
@@ -104,9 +244,9 @@
       document.getElementById("kpiAlertEnabled").textContent = String(enabledAlerts);
     }
 
-    function renderClusters() {
+    async function renderClusters() {
       const body = document.getElementById("clusterBody");
-      const list = load(CLUSTER_KEY);
+      const list = await load(CLUSTER_KEY);
       body.innerHTML = "";
       if (!list.length) {
         body.innerHTML = '<tr><td class="empty" colspan="3">暂无集群</td></tr>';
@@ -131,9 +271,9 @@
       });
     }
 
-    function renderJobs() {
+    async function renderJobs() {
       const body = document.getElementById("jobBody");
-      const list = load(JOB_KEY);
+      const list = await load(JOB_KEY);
       body.innerHTML = "";
       if (!list.length) {
         body.innerHTML = '<tr><td class="empty" colspan="4">暂无 Job</td></tr>';
@@ -153,9 +293,15 @@
       });
     }
 
-    renderKpi();
-    renderClusters();
-    renderJobs();
+    async function init() {
+      await refreshAndRender();
+      if (!hasAutoRefreshed) {
+        hasAutoRefreshed = true;
+        refreshAllClustersJobOverview();
+      }
+    }
+
+    init();
   </script>
 </body>
 </html>
