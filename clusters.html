@@ -20,6 +20,11 @@
     .btn-primary { background: #1677ff; color: #fff; }
     .btn-open { background: #16a34a; color: #fff; margin-right: 8px; height: 34px; }
     .btn-delete { background: #ef4444; color: #fff; height: 34px; }
+    .btn-check { background: #2563eb; color: #fff; height: 34px; margin-right: 8px; }
+    .btn-check-all { background: #0f766e; color: #fff; }
+    .status-online { color: #16a34a; font-weight: 600; }
+    .status-offline { color: #dc2626; font-weight: 600; }
+    .status-unknown { color: #6b7280; font-weight: 600; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
     th, td { border-bottom: 1px solid #eef0f3; padding: 12px 8px; text-align: left; word-break: break-all; }
     th { color: #475467; font-weight: 600; background: #fafafa; }
@@ -41,18 +46,20 @@
         <input id="clusterName" class="name-input" placeholder="集群名称" />
         <input id="clusterUrl" class="url-input" placeholder="集群地址（http:// 或 https://）" />
         <button id="addBtn" class="btn-primary">添加集群</button>
+        <button id="checkAllBtn" class="btn-check-all">立即检测全部</button>
       </div>
       <div style="font-size:12px; color:#98a2b3; margin-top:10px;">打开时自动拼接：/overview</div>
     </div>
 
     <div class="card">
       <table>
-        <thead><tr><th style="width: 22%;">名称</th><th>地址</th><th style="width: 180px;">操作</th></tr></thead>
+        <thead><tr><th style="width: 18%;">名称</th><th>地址</th><th style="width: 12%;">状态</th><th style="width: 22%;">最近检测时间</th><th style="width: 220px;">操作</th></tr></thead>
         <tbody id="clusterBody"></tbody>
       </table>
     </div>
   </div>
 
+  <script src="./data-access.js"></script>
   <script>
     const CLUSTER_KEY = "flink_clusters_v1";
     const FIXED_PATH = "/overview";
@@ -61,18 +68,17 @@
     const urlInput = document.getElementById("clusterUrl");
     const addBtn = document.getElementById("addBtn");
     const body = document.getElementById("clusterBody");
+    const checkAllBtn = document.getElementById("checkAllBtn");
+    const CLUSTER_HEALTH_KEY = window.DataAccess.CLUSTER_HEALTH_KEY || "flink_cluster_health_v1";
+    const AUTO_CHECK_INTERVAL = 30000;
+    let checkingAll = false;
 
     function load() {
-      try {
-        const raw = localStorage.getItem(CLUSTER_KEY);
-        return raw ? JSON.parse(raw) : [];
-      } catch (_) {
-        return [];
-      }
+      return window.DataAccess.load(CLUSTER_KEY);
     }
 
     function save(list) {
-      localStorage.setItem(CLUSTER_KEY, JSON.stringify(list));
+      return window.DataAccess.save(CLUSTER_KEY, list);
     }
 
     function normalizeBaseUrl(url) {
@@ -88,25 +94,77 @@
       }
     }
 
+    function loadHealthMap() {
+      return window.DataAccess.load(CLUSTER_HEALTH_KEY) || {};
+    }
+
+    function statusClass(status) {
+      if (status === "在线") return "status-online";
+      if (status === "离线") return "status-offline";
+      return "status-unknown";
+    }
+
+    function formatCheckedAt(ts) {
+      const value = Number(ts);
+      if (!Number.isFinite(value) || value <= 0) return "-";
+      return new Date(value).toLocaleString("zh-CN");
+    }
+
     function render() {
       const list = load();
+      const healthMap = loadHealthMap();
       body.innerHTML = "";
       if (!list.length) {
-        body.innerHTML = '<tr><td class="empty" colspan="3">暂无集群</td></tr>';
+        body.innerHTML = '<tr><td class="empty" colspan="5">暂无集群</td></tr>';
         return;
       }
       list.forEach((item, i) => {
+        const health = healthMap[item.name] || {};
+        const status = health.status || window.DataAccess.UNKNOWN_TEXT;
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${item.name || ""}</td>
           <td>${item.url || ""}</td>
+          <td><span class="${statusClass(status)}">${status}</span></td>
+          <td>${formatCheckedAt(health.checkedAt)}</td>
           <td>
+            <button class="btn-check" data-check="${i}">立即检测</button>
             <button class="btn-open" data-open="${i}">打开</button>
             <button class="btn-delete" data-delete="${i}">删除</button>
           </td>
         `;
         body.appendChild(tr);
       });
+    }
+
+    async function runCheckOne(index) {
+      const list = load();
+      const item = list[Number(index)];
+      if (!item) return;
+      await window.DataAccess.checkClusterConnectivity(item);
+      const healthMap = loadHealthMap();
+      const result = await window.DataAccess.checkClusterConnectivity(item);
+      healthMap[item.name] = result;
+      window.DataAccess.save(CLUSTER_HEALTH_KEY, healthMap);
+      render();
+    }
+
+    async function runCheckAll() {
+      if (checkingAll) return;
+      checkingAll = true;
+      const oldText = checkAllBtn.textContent;
+      checkAllBtn.textContent = "检测中...";
+      checkAllBtn.disabled = true;
+      try {
+        const list = load();
+        await window.DataAccess.checkClustersConnectivity(list);
+      } catch (_) {
+      } finally {
+        checkAllBtn.disabled = false;
+        checkAllBtn.textContent = oldText;
+        checkingAll = false;
+        render();
+      }
     }
 
     function addCluster() {
@@ -125,12 +183,19 @@
     }
 
     addBtn.addEventListener("click", addCluster);
+    checkAllBtn.addEventListener("click", runCheckAll);
     urlInput.addEventListener("keydown", (e) => { if (e.key === "Enter") addCluster(); });
 
     body.addEventListener("click", (e) => {
+      const checkIndex = e.target.getAttribute("data-check");
       const openIndex = e.target.getAttribute("data-open");
       const deleteIndex = e.target.getAttribute("data-delete");
       const list = load();
+
+      if (checkIndex !== null) {
+        runCheckOne(Number(checkIndex));
+        return;
+      }
 
       if (openIndex !== null) {
         const item = list[Number(openIndex)];
@@ -140,13 +205,21 @@
       }
 
       if (deleteIndex !== null) {
+        const deleted = list[Number(deleteIndex)];
         list.splice(Number(deleteIndex), 1);
         save(list);
+        if (deleted && deleted.name) {
+          const healthMap = loadHealthMap();
+          delete healthMap[deleted.name];
+          window.DataAccess.save(CLUSTER_HEALTH_KEY, healthMap);
+        }
         render();
       }
     });
 
     render();
+    runCheckAll();
+    setInterval(runCheckAll, AUTO_CHECK_INTERVAL);
   </script>
 </body>
 </html>

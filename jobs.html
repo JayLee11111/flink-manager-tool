@@ -26,6 +26,8 @@
     .btn-light { background: #475467; color: #fff; }
     .btn-delete { background: #ef4444; color: #fff; height: 34px; }
     .btn-view { background: #0ea5e9; color: #fff; height: 34px; margin-right: 8px; }
+    .btn-batch-start { background: #16a34a; color: #fff; }
+    .btn-batch-stop { background: #ea580c; color: #fff; }
     table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
     th, td { border-bottom: 1px solid #eef0f3; padding: 12px 8px; text-align: left; word-break: break-all; }
     th { color: #475467; font-weight: 600; background: #fafafa; }
@@ -88,14 +90,22 @@
         <input id="filterKeyword" class="flex-1" placeholder="关键字筛选（jobname/database/bu/remark）" />
         <button id="resetFilterBtn" class="btn-light">重置筛选</button>
       </div>
+      <div class="form-row" style="margin-bottom:10px;">
+        <button id="batchStartBtn" class="btn-batch-start">批量启动</button>
+        <button id="batchStopBtn" class="btn-batch-stop">批量停止</button>
+      </div>
 
       <table>
         <thead>
           <tr>
-            <th style="width: 14%;">Job 名称</th>
-            <th style="width: 14%;">所属集群</th>
-            <th style="width: 12%;">状态</th>
-            <th style="width: 16%;">备注</th>
+            <th style="width: 50px;"><input id="selectAllJobs" type="checkbox" /></th>
+            <th style="width: 12%;">Job 名称</th>
+            <th style="width: 12%;">所属集群</th>
+            <th style="width: 10%;">状态</th>
+            <th style="width: 14%;">启动时间</th>
+            <th style="width: 10%;">运行时长</th>
+            <th style="width: 14%;">Checkpoint 时间</th>
+            <th style="width: 12%;">备注</th>
             <th>参数预览</th>
             <th style="width: 160px;">操作</th>
           </tr>
@@ -117,6 +127,7 @@
     </div>
   </div>
 
+  <script src="./data-access.js"></script>
   <script>
     const CLUSTER_KEY = "flink_clusters_v1";
     const JOB_KEY = "flink_jobs_v1";
@@ -139,17 +150,16 @@
     const closeModalBtn = document.getElementById("closeModalBtn");
     const paramsJsonBox = document.getElementById("paramsJsonBox");
 
-    function load(key) {
-      try {
-        const raw = localStorage.getItem(key);
-        return raw ? JSON.parse(raw) : [];
-      } catch (_) {
-        return [];
+    async function load(key) {
+      const value = window.DataAccess.load(key);
+      if (value && typeof value.then === "function") {
+        return value;
       }
+      return value;
     }
 
     function save(key, value) {
-      localStorage.setItem(key, JSON.stringify(value));
+      return window.DataAccess.save(key, value);
     }
 
     function renderClusterOptions() {
@@ -217,8 +227,8 @@
       return parts.join("; ");
     }
 
-    function getFilteredJobs() {
-      const list = load(JOB_KEY);
+    async function getFilteredJobs() {
+      const list = await load(JOB_KEY);
       const cluster = filterCluster.value;
       const status = String(filterStatus.value || "").toUpperCase();
       const keyword = String(filterKeyword.value || "").trim().toLowerCase();
@@ -250,11 +260,11 @@
       return "stopped";
     }
 
-    function renderJobs() {
-      const list = getFilteredJobs();
+    async function renderJobs() {
+      const list = await getFilteredJobs();
       body.innerHTML = "";
       if (!list.length) {
-        body.innerHTML = '<tr><td class="empty" colspan="6">暂无 Job</td></tr>';
+        body.innerHTML = '<tr><td class="empty" colspan="9">暂无 Job</td></tr>';
         return;
       }
       list.forEach((item, i) => {
@@ -266,6 +276,9 @@
           <td>${item.name || ""}</td>
           <td>${item.cluster || ""}</td>
           <td><span class="tag ${cls}">${status || "UNKNOWN"}</span></td>
+          <td>${item.startTime || "未知"}</td>
+          <td>${item.uptime || "未知"}</td>
+          <td>${item.checkpointTime || "未知"}</td>
           <td>${item.remark || ""}</td>
           <td class="params-preview">${preview || "-"}</td>
           <td>
@@ -277,14 +290,14 @@
       });
     }
 
-    function addJob(job) {
-      const list = load(JOB_KEY);
+    async function addJob(job) {
+      const list = await load(JOB_KEY);
       list.push(job);
       save(JOB_KEY, list);
       renderJobs();
     }
 
-    function addJobManual() {
+    async function addJobManual() {
       const name = jobName.value.trim();
       const cluster = jobCluster.value;
       const status = jobStatus.value;
@@ -354,10 +367,10 @@
       renderJobs();
     });
 
-    body.addEventListener("click", (e) => {
+    body.addEventListener("click", async (e) => {
       const viewIdx = e.target.getAttribute("data-view");
       if (viewIdx !== null) {
-        const filtered = getFilteredJobs();
+        const filtered = await getFilteredJobs();
         const job = filtered[Number(viewIdx)];
         openParamsModal(job);
         return;
@@ -365,15 +378,14 @@
 
       const idx = e.target.getAttribute("data-delete");
       if (idx === null) return;
-      const filtered = getFilteredJobs();
+      const filtered = await getFilteredJobs();
       const job = filtered[Number(idx)];
       if (!job) return;
 
-      const all = load(JOB_KEY);
+      const all = await load(JOB_KEY);
       const realIndex = all.findIndex((x) =>
         x.name === job.name &&
         x.cluster === job.cluster &&
-        x.status === job.status &&
         (x.remark || "") === (job.remark || "") &&
         JSON.stringify(x.params || {}) === JSON.stringify(job.params || {})
       );

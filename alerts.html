@@ -33,6 +33,8 @@
     .sev.P1 { color: #7f1d1d; background: #fee2e2; border-color: #fca5a5; }
     .sev.P2 { color: #78350f; background: #fef3c7; border-color: #fcd34d; }
     .sev.P3 { color: #1e3a8a; background: #dbeafe; border-color: #93c5fd; }
+    .record-ok { color: #166534; }
+    .record-failed { color: #991b1b; }
   </style>
 </head>
 <body>
@@ -86,10 +88,29 @@
         <tbody id="alertBody"></tbody>
       </table>
     </div>
+
+    <div class="card">
+      <h2 style="margin:0 0 8px; font-size:18px;">最近触发记录</h2>
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 20%;">时间</th>
+            <th style="width: 20%;">告警名</th>
+            <th style="width: 10%;">级别</th>
+            <th>对象</th>
+            <th style="width: 12%;">状态</th>
+          </tr>
+        </thead>
+        <tbody id="recordBody"></tbody>
+      </table>
+    </div>
   </div>
 
+  <script src="./data-access.js"></script>
   <script>
     const ALERT_KEY = "flink_alerts_v1";
+    const ALERT_RECORD_KEY = "flink_alert_records_v1";
+    const ALERT_RECORD_LIMIT = 100;
 
     const alertName = document.getElementById("alertName");
     const alertType = document.getElementById("alertType");
@@ -99,18 +120,24 @@
     const rule = document.getElementById("rule");
     const addAlertBtn = document.getElementById("addAlertBtn");
     const body = document.getElementById("alertBody");
+    const recordBody = document.getElementById("recordBody");
 
     function load() {
-      try {
-        const raw = localStorage.getItem(ALERT_KEY);
-        return raw ? JSON.parse(raw) : [];
-      } catch (_) {
-        return [];
-      }
+      return window.DataAccess.load(ALERT_KEY);
     }
 
     function save(list) {
-      localStorage.setItem(ALERT_KEY, JSON.stringify(list));
+      return window.DataAccess.save(ALERT_KEY, list);
+    }
+
+    function loadRecords() {
+      const list = window.DataAccess.load(ALERT_RECORD_KEY);
+      return Array.isArray(list) ? list : [];
+    }
+
+    function saveRecords(list) {
+      const normalized = Array.isArray(list) ? list.slice(0, ALERT_RECORD_LIMIT) : [];
+      return window.DataAccess.save(ALERT_RECORD_KEY, normalized);
     }
 
     function normalizeAlert(item) {
@@ -125,7 +152,7 @@
       };
     }
 
-    function render() {
+    function renderAlertList() {
       const list = load().map(normalizeAlert);
       body.innerHTML = "";
       if (!list.length) {
@@ -154,6 +181,44 @@
       });
     }
 
+    function renderRecordList() {
+      const records = loadRecords();
+      recordBody.innerHTML = "";
+      if (!records.length) {
+        recordBody.innerHTML = '<tr><td class="empty" colspan="5">暂无触发记录</td></tr>';
+        return;
+      }
+
+      records.forEach((item) => {
+        const tr = document.createElement("tr");
+        const status = item.status === "成功" ? "record-ok" : "record-failed";
+        tr.innerHTML = `
+          <td>${item.time || ""}</td>
+          <td>${item.alertName || ""}</td>
+          <td><span class="sev ${item.severity || "P2"}">${item.severity || "P2"}</span></td>
+          <td>${item.target || ""}</td>
+          <td class="${status}">${item.status || ""}</td>
+        `;
+        recordBody.appendChild(tr);
+      });
+    }
+
+    function render() {
+      renderAlertList();
+      renderRecordList();
+    }
+
+    function appendRecord(alertItem, statusText) {
+      const next = [{
+        time: new Date().toLocaleString("zh-CN"),
+        alertName: alertItem && alertItem.name ? alertItem.name : "",
+        severity: alertItem && alertItem.severity ? alertItem.severity : "P2",
+        target: alertItem && alertItem.target ? alertItem.target : "",
+        status: statusText
+      }].concat(loadRecords());
+      saveRecords(next);
+    }
+
     function addAlert() {
       const name = alertName.value.trim();
       const type = alertType.value;
@@ -166,7 +231,7 @@
       if (!target) return alert("请输入通知目标");
 
       const list = load();
-      list.push({
+      const item = {
         name,
         type,
         severity: sev,
@@ -174,8 +239,10 @@
         target,
         rule: ruleText,
         enabled: true
-      });
+      };
+      list.push(item);
       save(list);
+      appendRecord(item, "成功");
 
       alertName.value = "";
       notifyTarget.value = "";
@@ -194,13 +261,15 @@
         const i = Number(t);
         if (!list[i]) return;
         list[i].enabled = list[i].enabled === false;
+        appendRecord(normalizeAlert(list[i]), list[i].enabled ? "成功" : "失败");
         save(list);
         render();
         return;
       }
 
       if (d !== null) {
-        list.splice(Number(d), 1);
+        const removed = list.splice(Number(d), 1)[0];
+        if (removed) appendRecord(normalizeAlert(removed), "失败");
         save(list);
         render();
       }
